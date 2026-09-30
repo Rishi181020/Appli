@@ -23,11 +23,13 @@ from playwright.sync_api import BrowserContext, Page, sync_playwright
 from . import browser, calllog, config, cover_letter, forms, llm
 from . import known as known_mod
 from . import profile_md
+from . import workday
 from .answering import answer_fields, direct_answer, norm
 from .ats import SUPPORTED, adapters
 from .config import ROOT
 from .db import dedupe_jobs, require_multi_user, sb, user_id
 from .db import fresh as db_fresh
+from .db import unpark_workday
 from .profile import Profile, load_profile
 from .resume import select as resume_select
 from .resume import tailor
@@ -119,7 +121,7 @@ def reset_stale() -> int:
         sb()
         .table("jobs")
         .update({"status": "queued", "status_reason": "Reset after an earlier run ended"})
-        .in_("status", ["filling", "ready_for_review"])
+        .in_("status", ["filling", "ready_for_review", "submission_required"])
         .execute()
     )
     return len(res.data)
@@ -143,7 +145,7 @@ def next_job(ids: list[int] | None, exclude: set[int] | None = None) -> dict | N
             if not rows:
                 print(f"Job {jid} not found - skipped")
                 continue
-            if rows[0]["status"] in ("submitted", "filling"):  # never refill an application that's already sent
+            if rows[0]["status"] in ("submitted", "filling", "submission_required"):  # never refill one that's sent / open
                 print(f"Job {jid} ({rows[0]['company']}) is {rows[0]['status']} - skipped")
                 continue
         else:
@@ -353,7 +355,8 @@ def process(pw, ctx, job: dict, profile: Profile, bank: dict[str, str], known: l
     jid, url, ats = job["id"], job["url"], job["ats"]
     posting_url, form_url = adapters.urls(ats, url)
     page = ctx.new_page()
-    browser.install_guard(page)
+    if ats != "workday":  # Workday: the person clicks every step; a DOM guard covers the runner's fills
+        browser.install_guard(page)
 
     def give_up(status: str, reason: str):
         update(jid, status=status, status_reason=reason)
@@ -367,6 +370,11 @@ def process(pw, ctx, job: dict, profile: Profile, bank: dict[str, str], known: l
     step = Steps()
     try:
         page.goto(posting_url, wait_until="domcontentloaded", timeout=45000)
+        if ats == "workday":  # the posting is rendered client-side
+            try:
+                page.wait_for_selector('[data-automation-id="jobPostingDescription"]', timeout=15000)
+            except Exception:
+                pass
         page.wait_for_timeout(2500)
         text = page.inner_text("body")
         step("posting page loaded")
@@ -394,6 +402,9 @@ def process(pw, ctx, job: dict, profile: Profile, bank: dict[str, str], known: l
             pending_drafts.append(_BG.submit(_draft_tailoring, jid, job, match_info, profile.text))
             page.close()
             return None
+
+        if ats == "workday":
+            return _start_workday(page, job, profile, bank, known, key, resume_path, give_up)
 
         if form_url and form_url != posting_url:
             page.goto(form_url, wait_until="domcontentloaded", timeout=45000)
@@ -490,6 +501,78 @@ def process(pw, ctx, job: dict, profile: Profile, bank: dict[str, str], known: l
         return None
 
 
+# ---- Workday: page by page ------------------------------------------------------------------
+def _start_workday(page, job, profile, bank, known, key, resume_path, give_up):
+    """Apply -> the first Workday page. The person clicks every Save and Continue; each new page is filled when it
+    appears (see workday.step). Returns the tracked application, or None."""
+    jid = job["id"]
+    reason = workday.begin(page, job)
+    if reason == "already applied":
+        update(jid, status="submitted", status_reason="Workday says you already applied to this job")
+        print("    already applied (Workday) - marked submitted")
+        page.close()
+        return None
+    if reason:
+        return give_up("needs_manual", reason)
+    t = workday.Tracked(job, page, profile, bank, known, resume_path, key, cover_letter.resume_text(str(resume_path)))
+    _workday_step(t)
+    return t
+
+
+def _workday_update(jid: int, **fields):
+    try:
+        update(jid, **fields)
+    except Exception as e:
+        if "status_check" not in str(e) or fields.get("status") != "submission_required":
+            raise
+        # migration 005 not run yet: the database doesn't know 'submission_required'
+        print("    note: run supabase/migrations/005_workday_steps.sql to get the 'Submission required' status")
+        update(jid, **{**fields, "status": "ready_for_review"})
+
+
+def _workday_step(t: "workday.Tracked") -> str:
+    jid = t.job["id"]
+    # the person clicks every Sign In / Save and Continue / Submit here, so the form-submit guard stays lifted
+    # (workday.py blocks the Next buttons only while the runner is typing)
+    browser.release(t.page)
+    r = workday.step(t, lambda **fields: _workday_update(jid, **fields))
+    if t.learn:
+        try:
+            n = known_mod.learn(t.learn, t.job.get("company"))
+            if n:
+                print(f"    learned {n} answer(s) for next time")
+        except Exception as e:
+            print(f"    learning skipped: {type(e).__name__}: {str(e)[:80]}")
+        t.learn.clear()
+    if r == "submitted":
+        update(jid, status="submitted", status_reason=None)
+        print(f"    job {jid}: Workday submission detected - marked submitted")
+    return r
+
+
+def poll_workday(wd: dict[int, "workday.Tracked"]):
+    """Fill each Workday application's next page once the person has clicked Save and Continue."""
+    for jid, t in list(wd.items()):
+        st = status_of(jid)
+        if st not in ("submission_required", "ready_for_review", "filling"):  # marked on the dashboard
+            del wd[jid]
+            continue
+        try:
+            r = _workday_step(t)
+        except Exception as e:
+            if _CLOSED_ERR.search(str(e)):
+                r = "closed"
+            else:
+                print(f"    workday job {jid}: {type(e).__name__}: {str(e)[:120]}")
+                continue
+        if r == "closed":
+            update(jid, status="queued", status_reason="Workday tab closed before submitting")
+            print(f"    job {jid}: Workday tab closed without submitting - back in the queue")
+            del wd[jid]
+        elif r == "submitted":
+            del wd[jid]
+
+
 # ---- watching the review tabs ---------------------------------------------------------------
 def poll_review(tracked: dict[int, Page]):
     for jid, page in list(tracked.items()):
@@ -516,12 +599,15 @@ def poll_review(tracked: dict[int, Page]):
             del tracked[jid]
 
 
-def review_loop(ctx: BrowserContext, tracked: dict[int, Page]):
-    if tracked:
-        print(f"\n{len(tracked)} tab(s) open for review. NOTHING has been submitted. Submit each yourself;")
+def review_loop(ctx: BrowserContext, tracked: dict[int, Page], wd: dict[int, "workday.Tracked"]):
+    if tracked or wd:
+        print(f"\n{len(tracked) + len(wd)} tab(s) open for you. NOTHING has been submitted. Submit each yourself;")
+        if wd:
+            print(f"{len(wd)} Workday application(s): click Save and Continue on each page; the next page is filled for you.")
         print("submissions are detected automatically. Close the browser or press Stop on the dashboard to end.")
-    while tracked and not STOP.exists() and browser_alive(ctx):
+    while (tracked or wd) and not STOP.exists() and browser_alive(ctx):
         poll_review(tracked)
+        poll_workday(wd)
         time.sleep(2)
     poll_review(tracked)
 
@@ -530,6 +616,7 @@ def review_loop(ctx: BrowserContext, tracked: dict[int, Page]):
 def run(limit: int = 20, ids: list[int] | None = None):
     acquire_lock()
     tracked: dict[int, Page] = {}
+    wd: dict[int, workday.Tracked] = {}  # Workday applications waiting for you to click Save and Continue
     try:
         require_multi_user()
         cfg = config.activate(user_id())
@@ -542,6 +629,9 @@ def run(limit: int = 20, ids: list[int] | None = None):
         if synced == "missing":
             raise SystemExit("No profile yet: finish the Profile tab in the dashboard first.")
         print("Profile: " + ("latest from the dashboard" if synced == "synced" else f"local file {config.PROFILE_PATH.name}"))
+        unparked = unpark_workday()
+        if unparked:
+            print(f"Workday is now filled page by page: {unparked} Workday job(s) moved back to the queue")
         stale = reset_stale()
         if stale:
             print(f"Reset {stale} job(s) left over from an earlier run")
@@ -586,12 +676,16 @@ def run(limit: int = 20, ids: list[int] | None = None):
                     print(f"    timing: {took:.0f}s total | chat models {chat:.0f}s | Jev {jv:.1f}s | "
                           f"browser + other {max(0, took - chat - jv):.0f}s"
                           + ("  (chat calls overlapped)" if chat + jv > took else ""))
-                    if page:
+                    if isinstance(page, workday.Tracked):
+                        wd[job["id"]] = page
+                        filled_n += 1
+                    elif page:
                         tracked[job["id"]] = page
                         filled_n += 1
                     st = status_of(job["id"]) or "?"
                     counts[st] = counts.get(st, 0) + 1
                     poll_review(tracked)
+                    poll_workday(wd)
                 if pending_drafts:
                     print(f"Finishing {len(pending_drafts)} tailored resume draft(s)...")
                     for fut in pending_drafts:
@@ -604,12 +698,12 @@ def run(limit: int = 20, ids: list[int] | None = None):
                 sb().table("runs").update(
                     {"finished_at": datetime.now(timezone.utc).isoformat(), "counts": {**counts, "llm": vars(llm.usage)}}
                 ).eq("id", run_row["id"]).execute()
-                review_loop(ctx, tracked)
+                review_loop(ctx, tracked, wd)
             except BrowserClosed:
                 print("Browser was closed - stopping.")
             finally:
-                for jid in list(tracked):  # anything still waiting has no tab once we exit
-                    if status_of(jid) == "ready_for_review":
+                for jid in list(tracked) + list(wd):  # anything still waiting has no tab once we exit
+                    if status_of(jid) in ("ready_for_review", "submission_required"):
                         update(jid, status="queued", status_reason="Runner stopped before it was submitted")
                 try:
                     ctx.close()

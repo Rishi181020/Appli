@@ -16,6 +16,7 @@ import {
 import RunCard, { getGoal } from "./RunCard";
 import Drawer from "./Drawer";
 import AddJobs from "./AddJobs";
+import PreScreen from "./PreScreen";
 import { IconChevron, IconPlay, IconRefresh, IconSearch } from "./Icons";
 
 const sameDay = (iso: string) => new Date(iso).toDateString() === new Date().toDateString();
@@ -221,9 +222,12 @@ export default function JobsView({ onOpenApplied }: { onOpenApplied: () => void 
             {new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })} · goal {getGoal()} a day
           </p>
         </div>
-        <button className="btn primary" onClick={() => setAdding(true)}>
-          + Add jobs
-        </button>
+        <div className="head-actions">
+          {jobs.some((j) => j.ats === "workday" && ["queued", "needs_manual"].includes(j.status)) && <PreScreen onDone={load} />}
+          <button className="btn primary" onClick={() => setAdding(true)}>
+            + Add jobs
+          </button>
+        </div>
       </header>
 
       {(adding || (!jobs.length && !error)) && (
@@ -249,6 +253,9 @@ export default function JobsView({ onOpenApplied }: { onOpenApplied: () => void 
 
       <section className="kpis">
         <Kpi label="Ready for review" value={counts.ready_for_review ?? 0} tone="accent" onClick={() => setStatus("ready_for_review")} />
+        {(counts.submission_required ?? 0) > 0 && (
+          <Kpi label="Submission required" value={counts.submission_required ?? 0} tone="warn" onClick={() => setStatus("submission_required")} />
+        )}
         <Kpi label="Applied today" value={submittedToday} tone="ok" onClick={onOpenApplied} />
         <Kpi label="Applied total" value={counts.submitted ?? 0} onClick={onOpenApplied} />
         <Kpi label="In queue" value={counts.queued ?? 0} onClick={() => setStatus("queued")} />

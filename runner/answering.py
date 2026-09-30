@@ -49,9 +49,7 @@ _IDENTITY = [
     (r"linkedin", lambda p: p.linkedin),
     (r"github", lambda p: p.github),
     (r"^(current )?(city|location)|where are you (located|based)", lambda p: p.city),
-    (r"^country( of residence| / region|/region)?$|^country\b", lambda p: "United States"),
     (r"^preferred (first )?name|^nickname", lambda p: p.first_name),
-    (r"^state( / province|/province)?$|^province", lambda p: "California"),
     (r"website|portfolio|personal (site|page)|^url$", lambda p: p.github),
 ]
 _STANDARD = [  # label regex -> key in profile.standard_answers
@@ -133,6 +131,23 @@ def _education_answer(f: Field, label: str, profile: Profile) -> str | None:
     return value
 
 
+_COUNTRY = re.compile(r"^country( of residence| / region|/region)?$|^country\b(?!.*(citizen|authori|visa|phone|code))")
+_STATE = re.compile(r"^(state|province|region)( / province|/province| or province)?$|^state\b(?!.*(sponsor|visa))")
+
+
+def _place_answer(f: Field, label: str, profile: Profile) -> str | None:
+    """Country and state/province of residence from the profile (never guessed)."""
+    from .places import country_option, state_option
+
+    if f.type in ("file", "checkbox", "radio", "consent"):
+        return None
+    if _COUNTRY.search(label) and profile.country:
+        return country_option(profile.country, f.options) if f.options else profile.country
+    if _STATE.search(label) and profile.state:
+        return state_option(profile.state, f.options) if f.options else profile.state
+    return None
+
+
 def direct_answer(f: Field, profile: Profile, bank: dict[str, str]) -> str | None:
     label = f.label.lower().strip(" *:?")
     learned = bank.get(norm(f.label))
@@ -149,6 +164,9 @@ def direct_answer(f: Field, profile: Profile, bank: dict[str, str]) -> str | Non
     edu = _education_answer(f, label, profile)
     if edu is not None:
         return edu
+    place = _place_answer(f, label, profile)
+    if place is not None:
+        return place
     if f.type in ("text", "email", "tel", "url", "combobox") and not f.options:
         for pattern, getter in _IDENTITY:
             if re.search(pattern, label):

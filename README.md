@@ -18,7 +18,7 @@ users/Rishi Rugweda Dixit/
 
 ## Project owner (admin)
 The Supabase project is shared. Each person signs in with their own account and only sees their own rows.
-- **First time:** run in the Supabase SQL editor, in order: `supabase/schema.sql`, then `migrations/002`, `003` and `004_multi_user.sql`. 004 gives every row an owner; existing rows go to the email at its top. In Authentication → Providers → Email, turn off "Allow new users to sign up".
+- **First time:** run in the Supabase SQL editor, in order: `supabase/schema.sql`, then `migrations/002`, `003`, `004_multi_user.sql` and `005_workday_steps.sql`. 004 gives every row an owner; existing rows go to the email at its top. In Authentication → Providers → Email, turn off "Allow new users to sign up".
 - **Add a friend:** Authentication → Users → **Add user** (their email + a password, auto-confirm). Send them the project URL, the **publishable** key and their login. Never share the service-role key: nobody needs it.
 - **Your own files:** on your first sign-in, the setup screen offers **Use my existing files**. It copies `jobright_profile.md`, the three resume folders, `Cover letter/`, `resumes/tailored/` and the browser profile into `users/<your full name>/` and saves your profile to the database. The originals are left in place; delete them once you're happy.
 - You can see all data in the Supabase console; tell friends that.
@@ -68,6 +68,22 @@ Implemented in `runner/resume/match.py` (scoring) and `runner/resume/tailor.py` 
 - **Layout.** Your resumes are already ATS-friendly: single column, standard headings (Education, Work Experience, Projects, Technical Skills), no text boxes or graphics. Tailoring never changes the layout. There's no Professional Summary section; tailoring doesn't add one because it only edits existing lines.
 - `python -m runner rescore [--dry-run]` recomputes match % for queued, tailoring and ready-for-review jobs without filling anything.
 
+## Find jobs
+The **Find jobs** tab searches for postings that fit you; you pick which to add.
+- **Sources:** the public job boards (Greenhouse, Lever, Ashby, Workday) of every company already in your jobs plus any careers links you add, and SimplifyJobs' new-grad / internship lists on GitHub. No scraping, no accounts.
+- **Preferences** (saved in `users/<Name>/search.json`): job titles (suggested from your profile), level (internships / new grad / entry), locations (empty = anywhere in your country; "Remote"), posted within N days, words to skip (senior, staff...).
+- **Pipeline:** anything already in your jobs is dropped; the best candidates (sites Appli fills, newest, early-career titles) are read, screened for sponsorship / citizenship / clearance exactly like a run (patterns + Jev), and scored against your resumes. Tick results and **Add to my jobs**: they join the queue with their match % (better matches get a better tier).
+- Command line: `python -m runner find` (results appear on the tab).
+
+## Workday (page by page)
+Workday needs an account on each company's site, and its forms are several pages long, so you drive and Appli fills.
+- **Once:** on **My files → Workday login**, save the one email + password you use for Workday everywhere (stored only in your folder).
+- **Screening first.** Every Workday posting is screened (sponsorship / US citizens only / clearance / closed, by pattern and Jev) before Apply is clicked, so no account is made for jobs you'd be skipped for. **Pre-screen Workday jobs** on Applications does the whole queue up front without opening any form (`python -m runner screen --ats workday`).
+- **The flow:** Apply → Autofill with Resume (your chosen resume is attached) → sign in / create account (email + password typed in; you do the CAPTCHA, terms box or email check and click the button) → each page is filled where your profile knows the answer, then the job shows **Submission required** until you click Next / Save and Continue → the next page is filled when it appears → on **Review** the job is *Ready for review* and you Submit.
+- **Left for you:** the company's own **Application Questions** pages (untouched), the work experience / education entries Workday fills from your resume (check them), consent checkboxes, and anything your profile doesn't cover.
+- Several Workday applications can be open at once; the runner keeps filling other jobs while it waits for you. Closing a Workday tab puts the job back in the queue.
+- **One-time:** run `supabase/migrations/005_workday_steps.sql` (adds the Submission required status). Workday jobs parked as "not automated yet" go back to the queue on the next run.
+
 ## Education
 Every education entry in your profile is filled (a second block is opened with "Add another"). School names come from your resume. If a school isn't in a site's list it picks **Other**, never a look-alike.
 
@@ -77,4 +93,5 @@ Every education entry in your profile is filled (a second block is opened with "
 - Anything not in your profile or saved answers is left blank and flagged, never guessed.
 - Legal and consent questions (family ties, conflicts of interest, criminal history, consent/acknowledgement) are never answered by the model. They stay blank unless you saved an answer. "If yes, provide details" follow-up boxes stay blank too.
 - The Run button's server listens on 127.0.0.1 only and rejects requests from other websites.
-- Workday, iCIMS, SmartRecruiters, Oracle, Paylocity and other sites are marked `needs_manual` for now.
+- On Workday the runner never clicks Next, Save and Continue or Submit: you do, on every page.
+- iCIMS, SmartRecruiters, Oracle, Paylocity and other sites are marked `needs_manual` for now.

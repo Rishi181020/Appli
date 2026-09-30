@@ -9,9 +9,10 @@ import ResumeReview from "./ResumeReview";
 import ProfileView from "./ProfileView";
 import FilesView from "./Files";
 import Onboarding from "./Onboarding";
-import { IconBookmark, IconCheck, IconDoc, IconFolder, IconList, IconLogout, IconUser } from "./Icons";
+import FindJobs from "./FindJobs";
+import { IconBookmark, IconCheck, IconDoc, IconFolder, IconList, IconLogout, IconSearch, IconUser } from "./Icons";
 
-type Tab = "jobs" | "applied" | "resume" | "answers" | "profile" | "files";
+type Tab = "jobs" | "find" | "applied" | "resume" | "answers" | "profile" | "files";
 
 export default function App() {
   const [session, setSession] = useState<Session | null | undefined>(undefined);
@@ -147,6 +148,7 @@ export default function App() {
           ) : (
             <>
               {nav("jobs", <IconList />, "Applications")}
+              {nav("find", <IconSearch />, "Find jobs")}
               {nav("applied", <IconCheck />, "Applied", applied !== null ? <span className="count">{applied}</span> : null)}
               {nav("resume", <IconDoc />, "Resume review", pendingResumes ? <span className="count warn-count">{pendingResumes}</span> : null)}
               {nav("answers", <IconBookmark />, "Saved answers")}
@@ -181,6 +183,8 @@ export default function App() {
           <ProfileView firstTime={false} onSaved={loadMe} />
         ) : tab === "files" ? (
           <FilesView me={me} onChange={(s) => setMe({ ...me, ...s })} />
+        ) : tab === "find" ? (
+          <FindJobs />
         ) : tab === "jobs" ? (
           <JobsView onOpenApplied={() => setTab("applied")} />
         ) : tab === "applied" ? (

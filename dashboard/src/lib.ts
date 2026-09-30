@@ -10,6 +10,7 @@ export type Status =
   | "queued"
   | "filling"
   | "tailoring"
+  | "submission_required"
   | "ready_for_review"
   | "submitted"
   | "skipped"
@@ -17,6 +18,7 @@ export type Status =
   | "failed";
 
 export const STATUSES: Status[] = [
+  "submission_required",
   "ready_for_review",
   "tailoring",
   "queued",
@@ -31,6 +33,7 @@ export const STATUS_LABEL: Record<Status, string> = {
   queued: "Queued",
   filling: "Filling",
   tailoring: "Tailoring resume",
+  submission_required: "Submission required",
   ready_for_review: "Ready for review",
   submitted: "Submitted",
   skipped: "Skipped",
@@ -194,6 +197,7 @@ export type Me = {
   db_ready: boolean;
   runner_connected: boolean;
   legacy_found: { profile: string; resumes: string[]; cover_letter: boolean } | null;
+  workday?: { email: string; has_password: boolean };
 };
 
 /** A picked file as base64 (the local server writes it into your folder). */

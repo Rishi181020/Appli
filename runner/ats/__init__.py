@@ -13,8 +13,9 @@ _HOSTS = [
     ("paylocity.com", "paylocity"),
 ]
 
-# ATSs with an adapter. Everything else becomes needs_manual in v1.
-SUPPORTED = {"greenhouse", "ashby", "lever", "workable"}
+# ATSs with an adapter. Everything else becomes needs_manual.
+# Workday is page by page: the person clicks every Save and Continue (see runner/workday.py).
+SUPPORTED = {"greenhouse", "ashby", "lever", "workable", "workday"}
 
 
 def detect_ats(url: str | None) -> str:

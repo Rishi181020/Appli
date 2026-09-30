@@ -43,9 +43,12 @@ After that, every sign-in goes straight to the dashboard. Press **Run** (or tick
 
 Change files later on **My files**, and your facts on **Profile**. Add jobs any time with **+ Add jobs**.
 
+**Workday jobs:** save your Workday email + password once on **My files**. On Workday you click every Next / Save and Continue yourself; Appli fills each page before you do and leaves the company's own questions for you.
+
 ## How your data is kept separate
 - Every row (jobs, answers, runs, profile) has an owner. The database only lets you read or change your own.
-- The runner on your computer signs in as you, with its own session. Your password is never stored.
+- The runner on your computer signs in as you, with its own session. Your Appli password is never stored.
+- Your Workday password, if you save it, stays in `users/<Your Name>/workday.json` on your computer only (plain text, git-ignored).
 - Your files live in `users/<Your Name>/` and are git-ignored, along with `.env`. Never commit or share them.
 - The project owner can see all data in the Supabase console (they administer it), so share accordingly.
 

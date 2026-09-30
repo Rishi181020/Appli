@@ -48,7 +48,8 @@ def render(d: dict) -> str:
     out = [f"# {_clean(d.get('name'))}", ""]
     contact = " · ".join(x for x in (_clean(d.get("location")), _clean(d.get("email")), _clean(d.get("phone"))) if x)
     out.append(contact)
-    for label, key in (("LinkedIn", "linkedin"), ("GitHub", "github"), ("Website", "website")):
+    for label, key in (("Country", "country"), ("State/Province", "state"), ("LinkedIn", "linkedin"), ("GitHub", "github"),
+                       ("Website", "website")):
         if _clean(d.get(key)):
             out.append(f"{label}: {_clean(d.get(key))}")
     out.append("")
@@ -107,6 +108,14 @@ def parse(md: str) -> dict:
     for label, key in (("LinkedIn", "linkedin"), ("GitHub", "github"), ("Website", "website")):
         m = re.search(rf"^{label}:\s*(\S+)", md, re.M)
         d[key] = m.group(1) if m else ""
+    for label, key in (("Country", "country"), ("State(?:/Province)?", "state")):
+        m = re.search(rf"^{label}:\s*(.+)$", md, re.M)
+        d[key] = m.group(1).strip() if m else ""
+    if not (d["country"] and d["state"]):
+        from .places import from_location
+
+        st, co = from_location(d["location"])
+        d["country"], d["state"] = d["country"] or co, d["state"] or st
 
     sections = {m.group(1).strip().lower(): m.end() for m in re.finditer(r"^##\s+(.+)$", md, re.M)}
     starts = sorted(sections.values())
@@ -158,6 +167,11 @@ def validate(d: dict) -> list[str]:
         errors.append("A valid email is required")
     if _clean(d.get("phone")) and not re.fullmatch(r"\+\d[\d ()-]{8,}\d", _clean(d.get("phone"))):
         errors.append("Phone must include the country code, e.g. +1 408 555 0123")
+    country = _clean(d.get("country")).lower()
+    if not country:
+        errors.append("Country you live in is required")
+    elif country in ("united states", "united states of america", "usa", "us") and not _clean(d.get("state")):
+        errors.append("State is required for the United States")
     if not d.get("education"):
         errors.append("Add at least one education entry")
     for q in REQUIRED_AUTH:

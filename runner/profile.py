@@ -44,6 +44,8 @@ class Profile:
     github: str
     standard_answers: dict[str, str] = field(default_factory=dict)
     education: list[Education] = field(default_factory=list)  # most recent first
+    country: str = ""  # e.g. "United States" (asked in the profile; else read from "City, ST")
+    state: str = ""  # state / province, e.g. "California"
 
 
 def _profile_education(text: str) -> list[Education]:
@@ -105,6 +107,13 @@ def load_profile(path: Path, resume_tex: Path | None = None) -> Profile:
     city = find(r"^([A-Za-z .'-]+,\s*[A-Z]{2})\s*·", 1, re.M)
     linkedin = find(r"LinkedIn:\s*(\S+)", 1)
     github = find(r"GitHub:\s*(\S+)", 1)
+    country = find(r"^Country:\s*(.+)$", 1, re.M)
+    state = find(r"^State(?:/Province)?:\s*(.+)$", 1, re.M)
+    if not (country and state):  # older profiles: "Santa Clara, CA" means California, United States
+        from .places import from_location
+
+        st, co = from_location(city)
+        country, state = country or co, state or st
     answers: dict[str, str] = {}
     for line in text.splitlines():
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
@@ -118,4 +127,4 @@ def load_profile(path: Path, resume_tex: Path | None = None) -> Profile:
         official = {year: school for school, year in _resume_schools(resume_tex)}
         for e in education:
             e.school = official.get(e.end_year, e.school)
-    return Profile(text, name, first, last, email, phone, city, linkedin, github, answers, education)
+    return Profile(text, name, first, last, email, phone, city, linkedin, github, answers, education, country, state)

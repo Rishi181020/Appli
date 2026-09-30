@@ -36,7 +36,8 @@ def status(owner_id: str) -> dict:
     """What this computer has for the person (for the dashboard)."""
     cfg = userconfig.load(owner_id)
     if cfg is None:
-        return {"folder": None, "resumes": [], "cover_letter": None, "profile_md": False}
+        return {"folder": None, "resumes": [], "cover_letter": None, "profile_md": False,
+                "workday": {"email": "", "has_password": False}}
     return {
         "folder": cfg.folder.relative_to(ROOT).as_posix(),
         "name": cfg.name,
@@ -44,7 +45,32 @@ def status(owner_id: str) -> dict:
                      "tex": bool(r.tex and r.tex.exists()), "focus": r.focus} for r in cfg.resumes],
         "cover_letter": cfg.cover_letter.name if cfg.cover_letter and cfg.cover_letter.exists() else None,
         "profile_md": cfg.profile_path.exists(),
+        "workday": workday_status(cfg),
     }
+
+
+# ---- Workday login: one email + password for every company's Workday site (stored only in this folder) ------------
+def workday_status(cfg: UserConfig) -> dict:
+    import json
+
+    f = cfg.folder / "workday.json"
+    try:
+        d = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+    except (OSError, ValueError):
+        d = {}
+    return {"email": d.get("email", ""), "has_password": bool(d.get("password"))}
+
+
+def save_workday(owner_id: str, email: str, password: str | None):
+    from . import config, workday
+
+    cfg = _need(owner_id)
+    if not re.fullmatch(r"[\w.+-]+@[\w-]+\.[\w.]+", (email or "").strip()):
+        raise FileError("Enter the email you use for Workday")
+    if not password and not workday_status(cfg)["has_password"]:
+        raise FileError("Enter the password you use for Workday")
+    config.activate(owner_id)
+    workday.save_credentials(email, password or None)
 
 
 def create(owner_id: str, email: str, name: str) -> UserConfig:
