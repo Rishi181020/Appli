@@ -121,7 +121,7 @@ def reset_stale() -> int:
         sb()
         .table("jobs")
         .update({"status": "queued", "status_reason": "Reset after an earlier run ended"})
-        .in_("status", ["filling", "ready_for_review", "submission_required"])
+        .in_("status", ["filling", "ready_for_review", "submission_required", "needs_help"])
         .execute()
     )
     return len(res.data)
@@ -145,7 +145,7 @@ def next_job(ids: list[int] | None, exclude: set[int] | None = None) -> dict | N
             if not rows:
                 print(f"Job {jid} not found - skipped")
                 continue
-            if rows[0]["status"] in ("submitted", "filling", "submission_required"):  # never refill one that's sent / open
+            if rows[0]["status"] in ("submitted", "filling", "submission_required", "needs_help"):  # never refill one that's sent / open
                 print(f"Job {jid} ({rows[0]['company']}) is {rows[0]['status']} - skipped")
                 continue
         else:
@@ -519,15 +519,20 @@ def _start_workday(page, job, profile, bank, known, key, resume_path, give_up):
     return t
 
 
+_STATUS_FALLBACK = {"needs_help": "submission_required", "submission_required": "ready_for_review"}
+
+
 def _workday_update(jid: int, **fields):
-    try:
-        update(jid, **fields)
-    except Exception as e:
-        if "status_check" not in str(e) or fields.get("status") != "submission_required":
-            raise
-        # migration 005 not run yet: the database doesn't know 'submission_required'
-        print("    note: run supabase/migrations/005_workday_steps.sql to get the 'Submission required' status")
-        update(jid, **{**fields, "status": "ready_for_review"})
+    """Write the job row; on a database without migrations 005/006 fall back to a status it knows."""
+    while True:
+        try:
+            return update(jid, **fields)
+        except Exception as e:
+            nxt = _STATUS_FALLBACK.get(fields.get("status"))
+            if "status_check" not in str(e) or not nxt:
+                raise
+            print(f"    note: run supabase/migrations/006_needs_help.sql (and 005) to get the '{fields['status']}' status")
+            fields = {**fields, "status": nxt}
 
 
 def _workday_step(t: "workday.Tracked") -> str:
@@ -535,7 +540,13 @@ def _workday_step(t: "workday.Tracked") -> str:
     # the person clicks every Sign In / Save and Continue / Submit here, so the form-submit guard stays lifted
     # (workday.py blocks the Next buttons only while the runner is typing)
     browser.release(t.page)
-    r = workday.step(t, lambda **fields: _workday_update(jid, **fields))
+    r = "moved"
+    for _ in range(10):  # keep going while pages fill and continue without needing you
+        r = workday.step(t, lambda **fields: _workday_update(jid, **fields), reload_bank=load_bank)
+        if r != "moved":
+            break
+    if r == "moved":
+        r = "waiting"
     if t.learn:
         try:
             n = known_mod.learn(t.learn, t.job.get("company"))
@@ -554,7 +565,7 @@ def poll_workday(wd: dict[int, "workday.Tracked"]):
     """Fill each Workday application's next page once the person has clicked Save and Continue."""
     for jid, t in list(wd.items()):
         st = status_of(jid)
-        if st not in ("submission_required", "ready_for_review", "filling"):  # marked on the dashboard
+        if st not in ("submission_required", "needs_help", "ready_for_review", "filling"):  # marked on the dashboard
             del wd[jid]
             continue
         try:
@@ -603,7 +614,8 @@ def review_loop(ctx: BrowserContext, tracked: dict[int, Page], wd: dict[int, "wo
     if tracked or wd:
         print(f"\n{len(tracked) + len(wd)} tab(s) open for you. NOTHING has been submitted. Submit each yourself;")
         if wd:
-            print(f"{len(wd)} Workday application(s): click Save and Continue on each page; the next page is filled for you.")
+            print(f"{len(wd)} Workday application(s): each page is filled and continued for you; questions it can't "
+                  "answer show up as 'Needs your help' on the dashboard.")
         print("submissions are detected automatically. Close the browser or press Stop on the dashboard to end.")
     while (tracked or wd) and not STOP.exists() and browser_alive(ctx):
         poll_review(tracked)
@@ -703,7 +715,7 @@ def run(limit: int = 20, ids: list[int] | None = None):
                 print("Browser was closed - stopping.")
             finally:
                 for jid in list(tracked) + list(wd):  # anything still waiting has no tab once we exit
-                    if status_of(jid) in ("ready_for_review", "submission_required"):
+                    if status_of(jid) in ("ready_for_review", "submission_required", "needs_help"):
                         update(jid, status="queued", status_reason="Runner stopped before it was submitted")
                 try:
                     ctx.close()

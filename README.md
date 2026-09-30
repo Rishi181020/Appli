@@ -18,7 +18,7 @@ users/Rishi Rugweda Dixit/
 
 ## Project owner (admin)
 The Supabase project is shared. Each person signs in with their own account and only sees their own rows.
-- **First time:** run in the Supabase SQL editor, in order: `supabase/schema.sql`, then `migrations/002`, `003`, `004_multi_user.sql` and `005_workday_steps.sql`. 004 gives every row an owner; existing rows go to the email at its top. In Authentication → Providers → Email, turn off "Allow new users to sign up".
+- **First time:** run in the Supabase SQL editor, in order: `supabase/schema.sql`, then `migrations/002` through `006_needs_help.sql`. 004 gives every row an owner; existing rows go to the email at its top. In Authentication → Providers → Email, turn off "Allow new users to sign up".
 - **Add a friend:** Authentication → Users → **Add user** (their email + a password, auto-confirm). Send them the project URL, the **publishable** key and their login. Never share the service-role key: nobody needs it.
 - **Your own files:** on your first sign-in, the setup screen offers **Use my existing files**. It copies `jobright_profile.md`, the three resume folders, `Cover letter/`, `resumes/tailored/` and the browser profile into `users/<your full name>/` and saves your profile to the database. The originals are left in place; delete them once you're happy.
 - You can see all data in the Supabase console; tell friends that.
@@ -43,7 +43,7 @@ Tabs: **Applications** (what still needs action, with **+ Add jobs** to paste li
 Each resume lives in its own folder in `users/<Name>/` with its LaTeX source (`Rishi Resume SWE/main.tex` + the PDF). PDF-only resumes get match % but no tailoring.
 - **Every job:** the posting's requirements (languages, tools, concepts) are extracted, and every resume is scored on how many it covers (required terms count double). The best one is uploaded, and the scores are shown on the job.
 - **Below 80%:** the form is still filled with the best resume, and a tailored version is drafted for **Resume review**. Each change is one tickable item with before/after, the exact words added and removed, and the sentence in your own materials that proves it. Terms you don't have anywhere are listed as **gaps** and never added; rejected edits and the reason are shown under **What went wrong**.
-- **Build:** the PDF is compiled from your LaTeX with only the ticked changes and saved in `users/<Name>/tailored/<job id>/` (with the `.tex` and a `.changes.md` log). If that job's tab is still open in a live run, the resume in it is swapped automatically; otherwise upload the saved PDF yourself. A job re-run later uses the tailored PDF.
+- **Build (= approve):** the job goes back to the front of the queue (even if it was already filled with the base resume, unless you submitted it) and is filled again with the tailored PDF; **Fill it now** starts that right away. The PDF is compiled from your LaTeX with only the ticked changes and saved in `users/<Name>/tailored/<job id>/` (with the `.tex` and a `.changes.md` log). Any later fill of that job uses the tailored PDF.
 - **One-time:** run `supabase/migrations/002_resume_tailoring.sql` in the Supabase SQL editor.
 - **Commands:** `python -m runner resume-check` (compile your LaTeX resumes), `python -m runner tailor --id 16 [--force] [--build]` (dry run for one job).
 
@@ -76,13 +76,14 @@ The **Find jobs** tab searches for postings that fit you; you pick which to add.
 - Command line: `python -m runner find` (results appear on the tab).
 
 ## Workday (page by page)
-Workday needs an account on each company's site, and its forms are several pages long, so you drive and Appli fills.
+Workday needs an account on each company's site and its forms are several pages long.
 - **Once:** on **My files → Workday login**, save the one email + password you use for Workday everywhere (stored only in your folder).
 - **Screening first.** Every Workday posting is screened (sponsorship / US citizens only / clearance / closed, by pattern and Jev) before Apply is clicked, so no account is made for jobs you'd be skipped for. **Pre-screen Workday jobs** on Applications does the whole queue up front without opening any form (`python -m runner screen --ats workday`).
-- **The flow:** Apply → Autofill with Resume (your chosen resume is attached) → sign in / create account (email + password typed in; you do the CAPTCHA, terms box or email check and click the button) → each page is filled where your profile knows the answer, then the job shows **Submission required** until you click Next / Save and Continue → the next page is filled when it appears → on **Review** the job is *Ready for review* and you Submit.
-- **Left for you:** the company's own **Application Questions** pages (untouched), the work experience / education entries Workday fills from your resume (check them), consent checkboxes, and anything your profile doesn't cover.
-- Several Workday applications can be open at once; the runner keeps filling other jobs while it waits for you. Closing a Workday tab puts the job back in the queue.
-- **One-time:** run `supabase/migrations/005_workday_steps.sql` (adds the Submission required status). Workday jobs parked as "not automated yet" go back to the queue on the next run.
+- **The flow:** Apply → Autofill with Resume (your chosen resume is attached) → sign in / create account (email + password typed in; you do the CAPTCHA, terms box or email check and click the button) → each page is filled and, when nothing required is left, **Appli clicks Next / Save and Continue itself** → on **Review** the job is *Ready for review* and **you Submit**. Appli never clicks Submit or Sign In.
+- **Needs your help:** when a page has required questions Appli can't answer (or Workday reports an error), the job shows **Needs your help** and lists them in its panel. Save an answer there: it's typed into the open page within a few seconds, the page continues, and the answer is reused on every matching question later. You can also fill the page in the browser and click Save and Continue yourself.
+- **Company questions** ("Application Questions" pages) are answered only from your saved answers and profile, never by a model.
+- Several Workday applications can be open at once; the runner keeps filling other jobs while one waits for you. Closing a Workday tab puts the job back in the queue.
+- **One-time:** run `supabase/migrations/005_workday_steps.sql` and `006_needs_help.sql` (the Submission required and Needs your help statuses). Workday jobs parked as "not automated yet" go back to the queue on the next run.
 
 ## Education
 Every education entry in your profile is filled (a second block is opened with "Add another"). School names come from your resume. If a school isn't in a site's list it picks **Other**, never a look-alike.

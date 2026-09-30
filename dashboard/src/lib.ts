@@ -10,6 +10,7 @@ export type Status =
   | "queued"
   | "filling"
   | "tailoring"
+  | "needs_help"
   | "submission_required"
   | "ready_for_review"
   | "submitted"
@@ -18,6 +19,7 @@ export type Status =
   | "failed";
 
 export const STATUSES: Status[] = [
+  "needs_help",
   "submission_required",
   "ready_for_review",
   "tailoring",
@@ -33,6 +35,7 @@ export const STATUS_LABEL: Record<Status, string> = {
   queued: "Queued",
   filling: "Filling",
   tailoring: "Tailoring resume",
+  needs_help: "Needs your help",
   submission_required: "Submission required",
   ready_for_review: "Ready for review",
   submitted: "Submitted",
@@ -302,6 +305,7 @@ export type BuildResult = {
   removed_words?: string[];
   db_warning?: string;
   next?: string;
+  queued?: boolean; // back in the queue to be filled with the tailored resume
 };
 
 

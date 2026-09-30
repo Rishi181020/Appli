@@ -1,13 +1,14 @@
-"""Workday, one page at a time, with the person clicking every "Save and Continue" and the final Submit.
+"""Workday, one page at a time: filled, then continued to the next page; the final Submit is always the person's.
 
-Flow for one job (the runner never clicks Next / Save and Continue / Submit):
+Flow for one job (the runner never clicks Submit or Sign In / Create Account):
   posting page (screened first, like every job) -> Apply -> "Autofill with Resume" (or "Apply Manually")
   -> sign in / create account: the saved Workday email + password are typed in; the person finishes the CAPTCHA
      or email check and clicks Sign In / Create Account
-  -> each step: filled where the profile knows the answer, then status "submission_required" until the person
-     clicks Save and Continue; the next step is filled when it appears
+  -> each step is filled where the profile knows the answer. Nothing required left: the runner clicks Next / Save and
+     Continue itself. Something it can't fill: status "needs_help" with the questions listed on the dashboard; answers
+     saved there are typed into the page and the step continues (or the person fills it in the browser).
   -> Review: status "ready_for_review"; the person submits; the confirmation marks it submitted.
-The company's own "Application Questions" are left exactly as they are.
+The company's own "Application Questions" are answered only from the person's saved answers, never by a model.
 
 Every Workday site uses the same data-automation-id attributes, so one filler works for all of them.
 """
@@ -21,7 +22,7 @@ from urllib.parse import urlparse
 from playwright.sync_api import Page
 
 from . import config
-from .answering import Field, answer_fields, fuzzy_option, norm
+from .answering import Field, answer_fields, direct_answer, fuzzy_option, norm
 
 # ---- the person's Workday login (one email + password for every company's Workday site) ------------------
 def _creds_file() -> Path | None:
@@ -286,6 +287,13 @@ class Tracked:
     uploads: list = field(default_factory=list)
     learn: list = field(default_factory=list)
     signed_in: bool = False
+    # the current step
+    kind: str = ""
+    name: str = ""
+    where: str = ""
+    button: str = "Save and Continue"
+    help: bool = False  # waiting for your answers
+    help_checked: float = 0.0
 
 
 def begin(page: Page, job: dict) -> str | None:
@@ -369,7 +377,10 @@ def _upload_resume(t: Tracked) -> bool:
 
 
 def _fill_page(t: Tracked, kind: str) -> tuple[int, list[dict]]:
-    """Fill what the profile knows on this step. -> (filled count, left for the person)."""
+    """Fill what's known on this step. -> (filled count, left for the person).
+
+    Company questions ("Application Questions" pages) are answered only from YOUR saved answers and profile, never by a
+    model; everything else also uses the usual tiers (profile -> Jev -> fast model)."""
     page, profile = t.page, t.profile
     skip = _SKIP_SECTIONS if kind == "experience" else []
     wfields = [f for f in extract(page, skip) if f.kind not in ("file", "date")]
@@ -388,10 +399,21 @@ def _fill_page(t: Tracked, kind: str) -> tuple[int, list[dict]]:
         else:
             rest.append(f)
     by_id = {f.id: f for f in rest}
-    res = answer_fields([f.as_field() for f in rest], profile, t.bank, t.job, t.resume_text, known=t.known)
-    for fid, v in res.values.items():
-        values[fid] = (v, res.tiers.get(fid, ""))
-    left = [u for u in res.unanswered]
+    left: list[dict] = []
+    if kind == "questions":
+        for f in rest:
+            v = direct_answer(f.as_field(), profile, t.bank)
+            if v:
+                values[f.id] = (v, "saved")
+            else:
+                left.append({"id": f.id, "label": f.label, "required": f.required, "options": f.options,
+                             "reason": "the company's question: answer it once and it's saved for next time"})
+    else:
+        res = answer_fields([f.as_field() for f in rest], profile, t.bank, t.job, t.resume_text, known=t.known)
+        for fid, v in res.values.items():
+            values[fid] = (v, res.tiers.get(fid, ""))
+        left = [{**u, "options": u.get("options") or by_id[u["id"]].options} if u.get("id") in by_id else u
+                for u in res.unanswered]
     all_by_id = {f.id: f for f in todo}
     n = 0
     for fid, (v, tier) in values.items():
@@ -399,19 +421,36 @@ def _fill_page(t: Tracked, kind: str) -> tuple[int, list[dict]]:
         if fill(page, f, v):
             n += 1
             t.filled.append({"label": f.label, "value": v[:400], "tier": tier or "direct"})
-            if fid in by_id:
+            if fid in by_id and kind != "questions":
                 t.learn.append((f.as_field(), v, tier))
         else:
             left.append({"id": fid, "label": f.label, "reason": f"couldn't fill (wanted: {v[:80]})", "required": f.required,
                          "options": f.options})
     for f in wfields:
         if f.kind == "consent" and not f.value:
-            left.append({"id": f.id, "label": f.label, "reason": "checkbox/consent left for you", "required": f.required})
+            left.append({"id": f.id, "label": f.label, "reason": "checkbox/consent: tick it in the browser",
+                         "required": f.required})
     return n, left
 
 
-# While the runner types into a page, a click on Next / Save and Continue / Submit is cancelled (it never clicks them
-# itself; this guards against a stray click or Enter). Lifted as soon as the page is handed to the person.
+def _fill_from_bank(t: Tracked) -> int:
+    """After you answer in the dashboard: type your new saved answers into the page's still-empty fields."""
+    page = t.page
+    n = 0
+    for f in extract(page, _SKIP_SECTIONS if t.kind == "experience" else []):
+        if f.value or f.kind in ("file", "date", "consent"):
+            continue
+        if f.kind == "list":
+            f.options = _list_options(page, f)
+        v = direct_answer(f.as_field(), t.profile, t.bank)
+        if v and fill(page, f, v):
+            n += 1
+            t.filled.append({"label": f.label, "value": v[:400], "tier": "you"})
+    return n
+
+
+# While the runner types into a page, a click on Next / Save and Continue / Submit is cancelled (a guard against a stray
+# click or Enter). The runner itself only ever clicks Next / Save and Continue, never Submit.
 _NEXT_GUARD_JS = """
 (on) => {
   if (!window.__appliNextGuard) {
@@ -437,6 +476,47 @@ def _guard(page: Page, on: bool):
         pass
 
 
+_NEXT = f'{A("bottom-navigation-next-button")}, {A("pageFooterNextButton")}'
+_ERRORS_JS = r"""
+() => [...document.querySelectorAll('[data-automation-id="errorMessage"], [data-automation-id="errorBanner"] li, [role="alert"]')]
+  .filter(e => e.getBoundingClientRect().height > 0).map(e => (e.innerText || '').replace(/\s+/g, ' ').trim()).filter(Boolean)
+"""
+
+
+def _continue(t: Tracked) -> tuple[bool, list[str]]:
+    """Click Next / Save and Continue (never Submit). -> (moved to another step, Workday's error messages)."""
+    page = t.page
+    btn = page.locator(_NEXT).first
+    try:
+        if not btn.count() or not btn.is_visible():
+            return False, []
+        if re.search(r"submit", btn.inner_text(timeout=2000) or "", re.I):
+            return False, []  # the final Submit is always yours
+        before = signature(page, read_step(page))
+        btn.click(timeout=5000)
+    except Exception:
+        return False, []
+    for _ in range(16):  # up to ~8s for the next step to load
+        page.wait_for_timeout(500)
+        if signature(page, read_step(page)) != before:
+            return True, []
+    try:
+        errors = list(dict.fromkeys(page.evaluate(_ERRORS_JS)))[:12]
+    except Exception:
+        errors = []
+    return False, errors
+
+
+def _error_items(errors: list[str]) -> list[dict]:
+    """Workday's messages ('The field X is required and must have a value.') as questions to answer."""
+    out = []
+    for e in errors:
+        m = re.search(r"(?:the field|field)\s+(.+?)\s+is required", e, re.I)
+        out.append({"id": f"err{len(out)}", "label": m.group(1).strip() if m else e[:160], "required": True,
+                    "reason": f"Workday says: {e[:200]}"})
+    return out
+
+
 def classify(s: dict) -> str:
     name = s["name"].lower()
     if s["password"]:
@@ -454,9 +534,41 @@ def classify(s: dict) -> str:
     return "other"
 
 
-def step(t: Tracked, update) -> str:
-    """Look at the page; if it moved to a new step, fill it. `update(**fields)` writes the job row.
-    -> 'waiting' | 'review' | 'submitted' | 'closed'"""
+_AUTO_CONTINUE = ("information", "experience", "questions", "disclosures")  # pages the runner moves past itself
+
+
+def _hand_over(t: Tracked, update, n: int, left: list[dict]) -> str:
+    """Nothing required left: continue to the next step. Otherwise ask for help (dashboard or browser)."""
+    need = [u for u in left if u.get("required")]
+    if t.kind in _AUTO_CONTINUE and not need:
+        moved, errors = _continue(t)
+        if moved:
+            print(f"    workday job {t.job['id']}: {t.where} done ({n} filled) - continued to the next step")
+            update(status="filling", status_reason=f"Workday: {t.where} done, next step loading", unanswered=left,
+                   filled_fields={"fields": t.filled, "uploads": t.uploads, "workday": True})
+            return "moved"
+        need = _error_items(errors) if errors else [{"id": "next", "label": f"Continue past {t.name}", "required": True,
+                                                    "reason": "the page didn't move on: check it in the browser"}]
+        left = need + [u for u in left if not u.get("required")]
+    t.help = bool(need)
+    if need:
+        msg = (f"Workday {t.where}: {len(need)} question(s) need your answer. Answer them here (saved for next time and "
+               f"typed into the page for you), or fill them in the browser and click {t.button}.")
+        update(status="needs_help", status_reason=msg, unanswered=left,
+               filled_fields={"fields": t.filled, "uploads": t.uploads, "workday": True})
+    else:
+        msg = (f"Workday {t.where}: filled {n}. Check the page, then click {t.button}." if t.kind != "other" else
+               f"Workday {t.where}: this page is left for you. Fill it, then click {t.button}.")
+        update(status="submission_required", status_reason=msg, unanswered=left,
+               filled_fields={"fields": t.filled, "uploads": t.uploads, "workday": True})
+    return "waiting"
+
+
+def step(t: Tracked, update, reload_bank=None) -> str:
+    """Look at the page; if it moved to a new step, fill it and (when nothing is left for you) continue to the next one.
+    While a step waits for your help, answers you save on the dashboard are typed in and the step continues.
+    `update(**fields)` writes the job row; `reload_bank()` returns your saved answers.
+    -> 'moved' (continued to the next step: call again) | 'waiting' | 'review' | 'submitted' | 'closed'"""
     page = t.page
     try:
         if page.is_closed():
@@ -468,6 +580,23 @@ def step(t: Tracked, update) -> str:
         return "submitted"
     sig = signature(page, s)
     if sig == t.sig:
+        if t.help and reload_bank and time.time() - t.help_checked > 5:
+            t.help_checked = time.time()
+            bank = reload_bank()
+            if bank != t.bank:  # you answered something on the dashboard
+                t.bank = bank
+                _guard(page, True)
+                try:
+                    typed = _fill_from_bank(t)
+                    _, left = _fill_page(t, t.kind) if t.kind in _AUTO_CONTINUE else (0, [])
+                except Exception as e:
+                    print(f"    workday fill problem: {type(e).__name__}: {str(e)[:120]}")
+                    typed, left = 0, [{"id": "x", "label": "page", "required": True, "reason": str(e)[:120]}]
+                finally:
+                    _guard(page, False)
+                if typed:
+                    print(f"    workday job {t.job['id']}: typed in {typed} answer(s) you gave on the dashboard")
+                return _hand_over(t, update, typed, left)
         return "waiting"
     t.sig = sig
     kind = classify(s)
@@ -476,22 +605,22 @@ def step(t: Tracked, update) -> str:
     if kind in ("information", "experience", "questions", "disclosures", "review") and not t.signed_in:
         t.signed_in = True
         _remember_account(page.url)
-    where = f"step {s['index']}/{s['total']} · {s['name']}" if s["index"] and s["total"] else (s["name"] or "Workday")
-    print(f"    workday job {t.job['id']}: {where} ({kind})")
+    t.kind, t.name, t.help = kind, s["name"], False
+    t.where = f"step {s['index']}/{s['total']} · {s['name']}" if s["index"] and s["total"] else (s["name"] or "Workday")
+    t.button = s["next"] if s["next"] and len(s["next"]) < 30 else "Save and Continue"
+    print(f"    workday job {t.job['id']}: {t.where} ({kind})")
 
     if kind == "sign_in":
-        reason = _sign_in(t)
-        update(status="submission_required", status_reason=reason)
+        update(status="submission_required", status_reason=_sign_in(t))
         return "waiting"
     if kind == "review":
         update(status="ready_for_review", status_reason="Workday review page: check everything, then Submit",
-               filled_fields={"fields": t.filled, "uploads": t.uploads, "workday": True})
+               unanswered=[], filled_fields={"fields": t.filled, "uploads": t.uploads, "workday": True})
         return "review"
 
     left: list[dict] = []
     n = 0
-    button = s["next"] if s["next"] and len(s["next"]) < 30 else "Save and Continue"
-    if kind not in ("questions", "other"):
+    if kind != "other":
         try:  # the step's fields render a moment after its title
             page.wait_for_selector('[data-automation-id^="formField-"]', timeout=8000)
         except Exception:
@@ -501,21 +630,11 @@ def step(t: Tracked, update) -> str:
     try:
         if kind == "experience":
             _upload_resume(t)
-        if kind not in ("questions", "other"):
+        if kind != "other":
             n, left = _fill_page(t, kind)
     except Exception as e:
         print(f"    workday fill problem: {type(e).__name__}: {str(e)[:120]}")
+        left = [{"id": "x", "label": "this page", "required": True, "reason": f"couldn't fill it: {str(e)[:120]}"}]
     finally:
         _guard(page, False)
-    if kind == "questions":
-        msg = f"Workday {where}: the company's own questions are left for you. Answer them, then click {button}."
-    else:
-        need = [u for u in left if u.get("required")]
-        did = [f"filled {n}"] + (["resume attached"] if kind == "experience" and t.uploads else [])
-        msg = (f"Workday {where}: {', '.join(did)}" + (f", {len(need)} required left for you" if need else "")
-               + f". Check the page, then click {button}.")
-        if kind == "other":
-            msg = f"Workday {where}: this page is left for you. Fill it, then click {button}."
-    update(status="submission_required", status_reason=msg, unanswered=left,
-           filled_fields={"fields": t.filled, "uploads": t.uploads, "workday": True})
-    return "waiting"
+    return _hand_over(t, update, n, left)

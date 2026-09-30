@@ -561,13 +561,22 @@ class Handler(BaseHTTPRequestHandler):
         out = resume_build.build(rows[0], accepted)
         if not out.get("ok"):
             return self._json(200, out)
-        if rows[0]["status"] in ("tailoring", "queued", "failed", "needs_manual"):
-            db.sb().table("jobs").update(
-                {"status": "queued", "status_reason": "Tailored resume ready: filled first on the next run"}
-            ).eq("id", job_id).execute()
-            out["next"] = "Queued: it will be filled with your tailored resume first on the next run."
+        from .ats import SUPPORTED
+
+        job = rows[0]
+        if job["status"] == "submitted":
+            out["next"] = "Saved. You already submitted this application, so it isn't filled again."
+        elif job.get("ats") not in SUPPORTED:
+            out["next"] = "Saved. Appli can't fill this site, so upload the tailored PDF yourself."
         else:
-            out["next"] = "Saved. This job was already filled; upload the new PDF yourself if you haven't submitted yet."
+            # approved: back to the front of the queue, even if it was already filled with the base resume
+            db.sb().table("jobs").update(
+                {"status": "queued", "status_reason": "Tailored resume approved: filled again with it, first in the queue"}
+            ).eq("id", job_id).execute()
+            out["queued"] = True
+            out["next"] = ("Back in the queue: it's filled again with your tailored resume, first on the next run."
+                           + (" Close its old tab without submitting." if job["status"] in
+                              ("ready_for_review", "submission_required", "needs_help") else ""))
         return self._json(200, out)
 
     def _resume_dismiss(self, body: dict):

@@ -63,12 +63,12 @@ export default function Drawer({ id, onClose, onChanged }: Props) {
     const { error } = await saveAnswerRow(norm(u.label), u.label, val);
     if (!error) {
       setSaved((s) => ({ ...s, [u.id]: true }));
-      flash("Saved — reused on every matching question");
+      flash(job?.status === "needs_help" ? "Saved: Appli is typing it into the page" : "Saved — reused on every matching question");
     }
   }
 
   const open = (u: Unanswered) =>
-    u.id !== "cover" && !u.reason.startsWith("checkbox") && !u.reason.startsWith("file") && !u.reason.startsWith("conditional");
+    u.id !== "cover" && u.id !== "next" && !u.reason.startsWith("checkbox") && !u.reason.startsWith("file") && !u.reason.startsWith("conditional");
 
   return (
     <div className="overlay" onClick={onClose}>
@@ -191,9 +191,13 @@ export default function Drawer({ id, onClose, onChanged }: Props) {
             )}
 
             {job.unanswered && job.unanswered.length > 0 && (
-              <section className="card-s">
-                <h3>Left for you</h3>
-                <p className="muted small">Answer once and it’s saved for every matching question in future applications.</p>
+              <section className={`card-s ${job.status === "needs_help" ? "help-card" : ""}`}>
+                <h3>{job.status === "needs_help" ? "Needs your help" : "Left for you"}</h3>
+                <p className="muted small">
+                  {job.status === "needs_help"
+                    ? "Appli couldn't answer these on the open application. Save an answer: it's typed into the page within a few seconds, the page continues, and it's reused on every matching question later. Checkboxes: tick them in the browser."
+                    : "Answer once and it’s saved for every matching question in future applications."}
+                </p>
                 {job.unanswered.map((u, i) => (
                   <div className="q" key={u.id + i}>
                     <div className="qtext">
@@ -217,7 +221,7 @@ export default function Drawer({ id, onClose, onChanged }: Props) {
                           />
                         )}
                         <button className="btn" onClick={() => saveAnswer(u)} disabled={!(answers[u.id] ?? "").trim()}>
-                          {saved[u.id] ? "Saved ✓" : "Save"}
+                          {saved[u.id] ? "Saved ✓" : job.status === "needs_help" ? "Save & fill" : "Save"}
                         </button>
                       </div>
                     )}
