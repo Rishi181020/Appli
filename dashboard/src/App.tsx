@@ -9,12 +9,23 @@ import ResumeReview from "./ResumeReview";
 import ProfileView from "./ProfileView";
 import FilesView from "./Files";
 import Onboarding from "./Onboarding";
-import { IconBookmark, IconCheck, IconDoc, IconFolder, IconList, IconLogout, IconUser } from "./Icons";
+import FindJobs from "./FindJobs";
+import { IconBookmark, IconCheck, IconDoc, IconFolder, IconList, IconLogout, IconMoon, IconSearch, IconSun, IconUser, Logo } from "./Icons";
+import { useTheme } from "./theme";
 
-type Tab = "jobs" | "applied" | "resume" | "answers" | "profile" | "files";
+const initials = (s: string) =>
+  s
+    .split(/[\s@._-]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0]?.toUpperCase())
+    .join("");
+
+type Tab = "jobs" | "find" | "applied" | "resume" | "answers" | "profile" | "files";
 
 export default function App() {
   const [session, setSession] = useState<Session | null | undefined>(undefined);
+  const [theme, toggleTheme] = useTheme();
   const [tab, setTab] = useState<Tab>("jobs");
   const [applied, setApplied] = useState<number | null>(null);
   const [pendingResumes, setPendingResumes] = useState<number | null>(null);
@@ -79,7 +90,9 @@ export default function App() {
     return (
       <div className="center auth-bg">
         <div className="login">
-          <div className="logo big-logo">A</div>
+          <div className="logo big-logo">
+            <Logo size={52} />
+          </div>
           <h1>One setup step</h1>
           <p className="muted">
             Put the Supabase URL and publishable key you were given in the project's <code>.env</code> (see <code>.env.example</code>),
@@ -94,7 +107,9 @@ export default function App() {
     return (
       <div className="center auth-bg">
         <div className="login">
-          <div className="logo big-logo">A</div>
+          <div className="logo big-logo">
+            <Logo size={52} />
+          </div>
           <h1>Appli isn't running on this computer</h1>
           <p className="muted">
             Open it with <code>start.bat</code> (Windows) or <code>./start.sh</code> (Mac/Linux) and use the page it opens.
@@ -136,20 +151,27 @@ export default function App() {
     <div className="shell">
       <aside className="side">
         <div className="brand">
-          <div className="logo">A</div>
+          <div className="logo">
+            <Logo />
+          </div>
           <span>Appli</span>
+          <small>AI</small>
         </div>
-        <nav>
+        <nav aria-label="Main">
           {setup ? (
             <button className="nav on">
               <IconUser /> Set up
             </button>
           ) : (
             <>
+              <div className="nav-label">Apply</div>
               {nav("jobs", <IconList />, "Applications")}
+              {nav("find", <IconSearch />, "Find jobs")}
               {nav("applied", <IconCheck />, "Applied", applied !== null ? <span className="count">{applied}</span> : null)}
+              <div className="nav-label">Improve</div>
               {nav("resume", <IconDoc />, "Resume review", pendingResumes ? <span className="count warn-count">{pendingResumes}</span> : null)}
               {nav("answers", <IconBookmark />, "Saved answers")}
+              <div className="nav-label">You</div>
               {nav("profile", <IconUser />, "Profile")}
               {nav("files", <IconFolder />, "My files")}
             </>
@@ -157,12 +179,23 @@ export default function App() {
         </nav>
         <div className="spacer" />
         <div className="me">
-          <div className="me-mail" title={email}>
-            {me.name || email}
+          <div className="me-card" title={email}>
+            <div className="me-avatar" aria-hidden="true">
+              {initials(me.name || email)}
+            </div>
+            <div className="me-text">
+              <span className="me-name">{me.name || email.split("@")[0]}</span>
+              <span className="me-mail">{email}</span>
+            </div>
           </div>
-          <button className="nav" onClick={() => supabase.auth.signOut({ scope: "local" })}>
-            <IconLogout /> Sign out
-          </button>
+          <div className="me-actions">
+            <button className="nav" onClick={toggleTheme} aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}>
+              {theme === "dark" ? <IconSun /> : <IconMoon />} {theme === "dark" ? "Light" : "Dark"}
+            </button>
+            <button className="nav" onClick={() => supabase.auth.signOut({ scope: "local" })}>
+              <IconLogout /> Sign out
+            </button>
+          </div>
         </div>
       </aside>
       <main className="main">
@@ -181,6 +214,8 @@ export default function App() {
           <ProfileView firstTime={false} onSaved={loadMe} />
         ) : tab === "files" ? (
           <FilesView me={me} onChange={(s) => setMe({ ...me, ...s })} />
+        ) : tab === "find" ? (
+          <FindJobs />
         ) : tab === "jobs" ? (
           <JobsView onOpenApplied={() => setTab("applied")} />
         ) : tab === "applied" ? (

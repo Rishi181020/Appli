@@ -107,6 +107,56 @@ def start(owner_id: str, limit: int, ids: list[int] | None = None) -> tuple[int,
         return 200, {"started": True, "pid": _proc.pid}
 
 
+# ---- background tasks beside a run: the Workday pre-screen and the job search ------------------------------------
+_tasks: dict[str, dict] = {}  # name -> {"proc", "owner"}
+
+
+def _task_log(name: str) -> Path:
+    return OUT / f"{name}.log"
+
+
+def start_task(name: str, owner_id: str, args: list[str], what: str) -> tuple[int, dict]:
+    t = _tasks.get(name) or {}
+    if t.get("proc") is not None and t["proc"].poll() is None:
+        return 409, {"error": f"{what} is already running."}
+    if not db.has_session(owner_id):
+        return 409, {"error": "The runner isn't connected to your account: sign out and sign in again.", "reconnect": True}
+    OUT.mkdir(exist_ok=True)
+    env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8", "APPLI_OWNER": owner_id}
+    log = open(_task_log(name), "w", encoding="utf-8")
+    _tasks[name] = {"owner": owner_id, "proc": subprocess.Popen(
+        [sys.executable, "-m", "runner", *args], cwd=str(ROOT), stdout=log, stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL, env=env, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )}
+    print(f"=== {what} started from the dashboard ===", flush=True)
+    return 200, {"started": True}
+
+
+def task_status(name: str, owner_id: str) -> dict:
+    """{running, current, total, lines} from the task's log ('[3/40] ...' lines give the progress)."""
+    t = _tasks.get(name) or {}
+    if t.get("owner") not in (None, owner_id):
+        return {"running": False, "current": 0, "total": 0, "lines": []}
+    p = t.get("proc")
+    f = _task_log(name)
+    lines = f.read_text(encoding="utf-8", errors="replace").splitlines() if f.exists() and t else []
+    cur = tot = 0
+    for ln in lines:
+        m = re.match(r"\[(\d+)/(\d+)\]", ln)
+        if m:
+            cur, tot = int(m.group(1)), int(m.group(2))
+    return {"running": p is not None and p.poll() is None, "current": cur, "total": tot, "lines": lines[-12:],
+            "exit": p.poll() if p is not None else None}
+
+
+def screen_status(owner_id: str) -> dict:
+    s = task_status("screen", owner_id)
+    f = _task_log("screen")
+    lines = f.read_text(encoding="utf-8", errors="replace").splitlines() if f.exists() and _tasks.get("screen") else []
+    return {**s, "skipped": sum(1 for ln in lines if ln.strip().startswith("skipped:")),
+            "done": next((ln for ln in reversed(lines) if ln.startswith("Done:")), "")}
+
+
 def _tee(proc: subprocess.Popen):
     """Copy the runner's output to this terminal (live) and to out/run.log (for the dashboard's Activity panel)."""
     with open(LOG, "w", encoding="utf-8") as logf:
@@ -250,6 +300,18 @@ class Handler(BaseHTTPRequestHandler):
             })
         if path == "/api/health":
             return self._json(200, {"checks": health()})
+        if path == "/api/screen":
+            return self._json(200, screen_status(uid))
+        if path == "/api/find":  # search preferences, progress and the latest results
+            from dataclasses import asdict
+
+            from . import jobsearch
+
+            with _files_lock:
+                if config.activate(uid, required=False) is None:
+                    return self._json(400, {"error": "Finish the setup screens first"})
+                prefs, found = asdict(jobsearch.load_prefs()), jobsearch.load_found()
+            return self._json(200, {"status": task_status("find", uid), "prefs": prefs, "found": found})
         return self._json(404, {"error": "not found"})
 
     # ---- POST -------------------------------------------------------------------------------
@@ -304,6 +366,33 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(400, {"error": "Select at least one job"})
             code, out = start(uid, limit, ids)
             return self._json(code, out)
+        if path == "/api/screen":
+            ats = str(body.get("ats") or "workday")
+            if not re.fullmatch(r"[a-z]+", ats):
+                return self._json(400, {"error": "bad ats"})
+            code, out = start_task("screen", uid, ["screen", "--ats", ats], f"Pre-screen of queued {ats} postings")
+            return self._json(code, out)
+
+        # ---- Find jobs
+        if path == "/api/find":
+            if config.USER is None:
+                return self._json(400, {"error": "Finish the setup screens first"})
+            code, out = start_task("find", uid, ["find"], "Job search")
+            return self._json(code, out)
+        if path == "/api/find/prefs":
+            from dataclasses import asdict
+
+            from . import jobsearch
+
+            return self._json(200, {"prefs": asdict(jobsearch.save_prefs(body.get("prefs") or {}))})
+        if path == "/api/find/suggest":
+            from . import jobsearch
+            from .profile import load_profile
+
+            profile = load_profile(config.PROFILE_PATH, config.PRIMARY_TEX)
+            return self._json(200, {"titles": jobsearch.suggest_titles(profile.text)})
+        if path == "/api/find/add":
+            return self._find_add(body)
         if path == "/api/stop":
             if not running_pid() or _run_owner() not in (None, uid):
                 return self._json(200, {"stopped": False})
@@ -332,6 +421,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, userfiles.status(uid))
         if path == "/api/files/cover/remove":
             userfiles.remove_cover(uid)
+            return self._json(200, userfiles.status(uid))
+        if path == "/api/files/workday":  # never sent back to the browser
+            userfiles.save_workday(uid, str(body.get("email", "")), body.get("password") or None)
             return self._json(200, userfiles.status(uid))
         if path == "/api/legacy/adopt":
             return self._adopt(user)
@@ -433,6 +525,27 @@ class Handler(BaseHTTPRequestHandler):
         result["duplicates_skipped"] = db.dedupe_jobs()
         return self._json(200, result)
 
+    def _find_add(self, body: dict):
+        """Add the picked search results to the person's jobs (with their match %, so the queue shows it at once)."""
+        from . import jobsearch
+
+        keys = set(str(k) for k in (body.get("keys") or []))
+        found = jobsearch.load_found()
+        picked = [r for r in found.get("results", []) if r["key"] in keys and not r.get("added")]
+        if not picked:
+            return self._json(400, {"error": "Pick at least one job"})
+        result = db.import_jobs(jobsearch.to_rows(picked))
+        for r in picked:
+            if r.get("match"):
+                try:
+                    db.sb().table("jobs").update({"resume_match": r["match"], "match_pct": r["match_pct"]}).eq(
+                        "dedupe_key", r["url"]).execute()
+                except Exception:
+                    pass  # older database without the match columns: the run scores it again
+            r["added"] = True
+        jobsearch.save_found(found)
+        return self._json(200, result)
+
     def _resume_build(self, body: dict):
         """Build the tailored PDF from the skills ticked; the paused job goes back to the front of the queue."""
         from .resume import build as resume_build
@@ -448,13 +561,22 @@ class Handler(BaseHTTPRequestHandler):
         out = resume_build.build(rows[0], accepted)
         if not out.get("ok"):
             return self._json(200, out)
-        if rows[0]["status"] in ("tailoring", "queued", "failed", "needs_manual"):
-            db.sb().table("jobs").update(
-                {"status": "queued", "status_reason": "Tailored resume ready: filled first on the next run"}
-            ).eq("id", job_id).execute()
-            out["next"] = "Queued: it will be filled with your tailored resume first on the next run."
+        from .ats import SUPPORTED
+
+        job = rows[0]
+        if job["status"] == "submitted":
+            out["next"] = "Saved. You already submitted this application, so it isn't filled again."
+        elif job.get("ats") not in SUPPORTED:
+            out["next"] = "Saved. Appli can't fill this site, so upload the tailored PDF yourself."
         else:
-            out["next"] = "Saved. This job was already filled; upload the new PDF yourself if you haven't submitted yet."
+            # approved: back to the front of the queue, even if it was already filled with the base resume
+            db.sb().table("jobs").update(
+                {"status": "queued", "status_reason": "Tailored resume approved: filled again with it, first in the queue"}
+            ).eq("id", job_id).execute()
+            out["queued"] = True
+            out["next"] = ("Back in the queue: it's filled again with your tailored resume, first on the next run."
+                           + (" Close its old tab without submitting." if job["status"] in
+                              ("ready_for_review", "submission_required", "needs_help") else ""))
         return self._json(200, out)
 
     def _resume_dismiss(self, body: dict):

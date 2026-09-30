@@ -42,7 +42,7 @@ def cmd_import(args):
 def cmd_check(_args):
     _activate()
     p = load_profile(config.PROFILE_PATH)
-    print(f"Profile: {p.full_name} | {p.email} | {p.phone} | {p.city}")
+    print(f"Profile: {p.full_name} | {p.email} | {p.phone} | {p.city} | {p.state}, {p.country}")
     print("Standard answers:", p.standard_answers)
     for key, path in config.RESUMES.items():
         print(f"Resume {key}: {'OK' if path.exists() else 'MISSING'} {path.name}")
@@ -146,6 +146,70 @@ def cmd_rescore(args):
         for c, old, new, exact in rows:
             print(f"  {c[:22]:22} {('–' if old is None else f'{old:.0%}'):>5} -> {new:4.0%}  (exact {exact:.0%})")
     print(calllog.summary())
+
+
+def cmd_screen(args):
+    """Read each queued posting (no form, no account) and skip the ones you can't take: no sponsorship, US citizens
+    only, clearance, closed. Patterns first, then Jev. Nothing else changes."""
+    import re
+
+    from playwright.sync_api import sync_playwright
+
+    from .ats import adapters
+    from .db import sb, unpark_workday
+    from .screening import active_screens, jev_screen, screen
+
+    _activate()
+    unpark_workday()  # Workday jobs parked before Workday was supported
+    profile = load_profile(config.PROFILE_PATH, config.PRIMARY_TEX)
+    active = active_screens(profile.standard_answers)
+    q = sb().table("jobs").select("id,company,role,ats,url").eq("status", "queued")
+    if args.ats != "all":
+        q = q.eq("ats", args.ats)
+    jobs = [j for j in q.order("fit_tier").order("id").limit(args.limit).execute().data if j["url"]]
+    print(f"Screening {len(jobs)} queued {args.ats} posting(s) for: {', '.join(sorted(active)) or 'closed postings only'}")
+    skipped = 0
+    with sync_playwright() as pw:
+        b = pw.chromium.launch(headless=True)
+        for i, j in enumerate(jobs, 1):
+            print(f"[{i}/{len(jobs)}] {j['company']} - {j['role']}", flush=True)
+            page = b.new_page()
+            try:
+                page.goto(adapters.urls(j["ats"], j["url"])[0], wait_until="domcontentloaded", timeout=45000)
+                if j["ats"] == "workday":
+                    try:
+                        page.wait_for_selector('[data-automation-id="jobPostingDescription"]', timeout=15000)
+                    except Exception:
+                        pass
+                page.wait_for_timeout(2000)
+                text = re.sub(r"\s+", " ", page.inner_text("body"))
+            except Exception as e:
+                print(f"    couldn't load ({type(e).__name__}): left in the queue")
+                page.close()
+                continue
+            page.close()
+            reason = screen(text, active)
+            if not reason:
+                try:
+                    reason = jev_screen(text, j["id"], active)
+                except Exception as e:
+                    print(f"    Jev unavailable: {str(e)[:80]}")
+            if reason:
+                skipped += 1
+                print(f"    skipped: {reason[:120]}")
+                if not args.dry_run:
+                    sb().table("jobs").update({"status": "skipped", "status_reason": reason}).eq("id", j["id"]).eq(
+                        "status", "queued").execute()
+        b.close()
+    print(f"Done: {skipped} of {len(jobs)} skipped{' (dry run: nothing saved)' if args.dry_run else ''}")
+
+
+def cmd_find(_args):
+    """Search the job boards and new-grad/intern lists with your Find jobs preferences; results go to Find jobs."""
+    from . import jobsearch
+
+    _activate()
+    jobsearch.search(lambda s: print(s, flush=True))
 
 
 def cmd_learn(_args):
@@ -270,6 +334,13 @@ def main():
     p_srv = sub.add_parser("serve", help="Start the dashboard + Run button server (http://localhost:8765)")
     p_srv.add_argument("--no-browser", action="store_true")
     p_srv.set_defaults(fn=cmd_serve)
+    p_sc = sub.add_parser("screen", help="Skip queued postings you can't take (sponsorship / citizenship / clearance)")
+    p_sc.add_argument("--ats", default="workday", help="workday (default), greenhouse, ... or all")
+    p_sc.add_argument("--limit", type=int, default=1000)
+    p_sc.add_argument("--dry-run", action="store_true")
+    p_sc.set_defaults(fn=cmd_screen)
+    sub.add_parser("find", help="Search for relevant jobs (results appear on the dashboard's Find jobs tab)").set_defaults(
+        fn=cmd_find)
     sub.add_parser("learn", help="Seed learned answers from forms already filled").set_defaults(fn=cmd_learn)
     p_rs = sub.add_parser("rescore", help="Recompute match % for existing jobs (no filling, no status change)")
     p_rs.add_argument("--status", default="ready_for_review,queued,tailoring", help="Comma-separated statuses to rescore")

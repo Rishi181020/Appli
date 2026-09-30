@@ -9,6 +9,8 @@ export type ProfileData = {
   email: string;
   phone: string;
   location: string;
+  country: string;
+  state: string;
   linkedin: string;
   github: string;
   website: string;
@@ -74,6 +76,8 @@ export const emptyProfile = (): ProfileData => ({
   email: "",
   phone: "",
   location: "",
+  country: "",
+  state: "",
   linkedin: "",
   github: "",
   website: "",
@@ -92,6 +96,8 @@ export function renderProfile(d: ProfileData): string {
   const out: string[] = [`# ${clean(d.name)}`, ""];
   out.push([clean(d.location), clean(d.email), clean(d.phone)].filter(Boolean).join(" · "));
   for (const [label, key] of [
+    ["Country", "country"],
+    ["State/Province", "state"],
     ["LinkedIn", "linkedin"],
     ["GitHub", "github"],
     ["Website", "website"],
@@ -154,6 +160,9 @@ export function validateProfile(d: ProfileData): string[] {
   if (!clean(d.name)) errors.push("Name is required");
   if (!/^[\w.+-]+@[\w-]+\.[\w.]+$/.test(clean(d.email))) errors.push("A valid email is required");
   if (clean(d.phone) && !/^\+\d[\d ()-]{8,}\d$/.test(clean(d.phone))) errors.push("Phone must include the country code, e.g. +1 408 555 0123");
+  const country = clean(d.country).toLowerCase();
+  if (!country) errors.push("Country you live in is required");
+  else if (US_NAMES.includes(country) && !clean(d.state)) errors.push("State is required for the United States");
   if (!d.education.length) errors.push("Add at least one education entry");
   d.education.forEach((e, i) => {
     if (!clean(e.school) || !clean(e.degree)) errors.push(`Education ${i + 1}: school and degree are required`);
@@ -179,5 +188,30 @@ export function normalizeProfile(raw: Partial<ProfileData> | null | undefined): 
   d.skills = ((d.skills ?? []) as Partial<SkillGroup>[]).map((s) => ({ ...skillBlank, ...s }));
   d.authorization = d.authorization ?? {};
   d.common = d.common ?? {};
+  if (!d.country || !d.state) {
+    // older profiles and resume imports: "Santa Clara, CA" means California, United States
+    const m = /,\s*([A-Z]{2})\b/.exec(d.location ?? "");
+    if (m && US_STATES[m[1]]) {
+      d.state = d.state || US_STATES[m[1]];
+      d.country = d.country || "United States";
+    }
+  }
   return d;
 }
+
+export const US_NAMES = ["united states", "united states of america", "usa", "us"];
+export const US_STATES: Record<string, string> = {
+  AL: "Alabama", AK: "Alaska", AZ: "Arizona", AR: "Arkansas", CA: "California", CO: "Colorado", CT: "Connecticut",
+  DE: "Delaware", DC: "District of Columbia", FL: "Florida", GA: "Georgia", HI: "Hawaii", ID: "Idaho", IL: "Illinois",
+  IN: "Indiana", IA: "Iowa", KS: "Kansas", KY: "Kentucky", LA: "Louisiana", ME: "Maine", MD: "Maryland",
+  MA: "Massachusetts", MI: "Michigan", MN: "Minnesota", MS: "Mississippi", MO: "Missouri", MT: "Montana",
+  NE: "Nebraska", NV: "Nevada", NH: "New Hampshire", NJ: "New Jersey", NM: "New Mexico", NY: "New York",
+  NC: "North Carolina", ND: "North Dakota", OH: "Ohio", OK: "Oklahoma", OR: "Oregon", PA: "Pennsylvania",
+  RI: "Rhode Island", SC: "South Carolina", SD: "South Dakota", TN: "Tennessee", TX: "Texas", UT: "Utah",
+  VT: "Vermont", VA: "Virginia", WA: "Washington", WV: "West Virginia", WI: "Wisconsin", WY: "Wyoming",
+  PR: "Puerto Rico",
+};
+export const COUNTRIES = [
+  "United States", "Canada", "India", "United Kingdom", "Germany", "France", "Netherlands", "Ireland", "Singapore",
+  "Australia", "China", "Japan", "South Korea", "Brazil", "Mexico", "Israel", "United Arab Emirates", "Other",
+];

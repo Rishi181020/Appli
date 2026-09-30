@@ -160,7 +160,7 @@ export default function Onboarding({ me, setMe, onFinish }: { me: Me; setMe: (m:
       {step === 4 && (
         <section className="panel pf">
           <h2>Jobs to apply to</h2>
-          <p className="muted small">Add some now or later from the Applications page. Each run fills the next ones, best tier first.</p>
+          <p className="muted small">Paste links or upload a list now, or skip and use <b>Find jobs</b> after setup to search job boards for roles that fit you. Each run fills the next ones, best matches first.</p>
           <AddJobs onDone={(r) => setJobsAdded((n) => n + r.inserted)} />
           <footer className="pf-nav">
             <button className="btn" onClick={() => setStep(3)}>

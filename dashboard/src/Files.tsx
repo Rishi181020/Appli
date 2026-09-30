@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Me, ResumeFile, agent, fileToBase64 } from "./lib";
 import { IconAlert, IconCheck, IconRefresh } from "./Icons";
 
-type FolderStatus = Pick<Me, "folder" | "resumes" | "cover_letter" | "profile_md">;
+type FolderStatus = Pick<Me, "folder" | "resumes" | "cover_letter" | "profile_md" | "workday">;
 type OnChange = (s: FolderStatus) => void;
 
 /** A button that opens a file picker. */
@@ -225,6 +225,63 @@ export function CoverManager({ me, onChange }: { me: FolderStatus; onChange: OnC
   );
 }
 
+/** One email + password for every company's Workday site: typed into Workday's sign-in page for you. */
+export function WorkdayLogin({ me, onChange }: { me: Me; onChange: OnChange }) {
+  const saved = me.workday ?? { email: "", has_password: false };
+  const [email, setEmail] = useState(saved.email);
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  async function save() {
+    setBusy(true);
+    setMsg(null);
+    try {
+      onChange(await agent<FolderStatus>("/api/files/workday", { email, password }));
+      setPassword("");
+      setMsg({ ok: true, text: "Saved on this computer only." });
+    } catch (e) {
+      setMsg({ ok: false, text: (e as Error).message });
+    }
+    setBusy(false);
+  }
+
+  return (
+    <div className="pf-list">
+      <p className="muted small">
+        Workday needs an account on each company's site. Use the same email and password everywhere: Appli types them into the sign-in
+        page, and you finish any CAPTCHA or email check. Then it fills each page and waits for you to click <b>Save and Continue</b>;
+        the company's own questions are left for you. Stored only in your folder on this computer.
+      </p>
+      <div className="pf-grid">
+        <label className="pf-field">
+          <span>Workday email</span>
+          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
+        </label>
+        <label className="pf-field">
+          <span>Workday password {saved.has_password && <em className="muted">(saved: leave blank to keep it)</em>}</span>
+          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" />
+        </label>
+      </div>
+      <div className="row">
+        <button className="btn primary small-btn" disabled={busy || !email || (!password && !saved.has_password)} onClick={save}>
+          {busy ? "Saving…" : "Save Workday login"}
+        </button>
+        {saved.has_password && (
+          <span className="chip-tag ok-tag">
+            <IconCheck /> {saved.email}
+          </span>
+        )}
+      </div>
+      {msg && (
+        <div className={`banner ${msg.ok ? "ok-b" : "error"}`}>
+          {msg.ok ? <IconCheck /> : <IconAlert />} {msg.text}
+        </div>
+      )}
+    </div>
+  );
+}
+
 type Check = { ok: boolean; what: string; fix: string };
 
 function SystemCheck() {
@@ -286,6 +343,10 @@ export default function FilesView({ me, onChange }: { me: Me; onChange: OnChange
       <section className="panel">
         <h2>Cover letter</h2>
         <CoverManager me={me} onChange={onChange} />
+      </section>
+      <section className="panel">
+        <h2>Workday login</h2>
+        <WorkdayLogin me={me} onChange={onChange} />
       </section>
       <section className="panel">
         <h2>System check</h2>

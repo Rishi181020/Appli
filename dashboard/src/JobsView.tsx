@@ -16,6 +16,8 @@ import {
 import RunCard, { getGoal } from "./RunCard";
 import Drawer from "./Drawer";
 import AddJobs from "./AddJobs";
+import PreScreen from "./PreScreen";
+import MultiSelect from "./MultiSelect";
 import { IconChevron, IconPlay, IconRefresh, IconSearch } from "./Icons";
 
 const sameDay = (iso: string) => new Date(iso).toDateString() === new Date().toDateString();
@@ -89,11 +91,14 @@ export default function JobsView({ onOpenApplied }: { onOpenApplied: () => void 
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [status, setStatus] = useState<Status | "all">("ready_for_review");
-  const [tier, setTier] = useState("all");
-  const [ats, setAts] = useState("all");
+  // multi-select filters: an empty list means "all"
+  const [statuses, setStatuses] = useState<Status[]>(["ready_for_review"]);
+  const setStatus = (s: Status) => setStatuses([s]); // the KPI cards jump to one status
+  const toggleStatus = (s: Status) => setStatuses((cur) => (cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s]));
+  const [tiers, setTiers] = useState<string[]>([]);
+  const [sites, setSites] = useState<string[]>([]);
   const [q, setQ] = useState("");
-  const [matchFilter, setMatchFilter] = useState("all");
+  const [matches, setMatches] = useState<string[]>([]);
   const [sort, setSort] = useState<"tier" | "match_desc" | "match_asc">("tier");
   const [openId, setOpenId] = useState<number | null>(null);
   // Manual queue: jobs ticked in the list, run in exactly this order.
@@ -165,7 +170,39 @@ export default function JobsView({ onOpenApplied }: { onOpenApplied: () => void 
     return c;
   }, [jobs]);
   const submittedToday = jobs.filter((j) => j.status === "submitted" && sameDay(j.updated_at)).length;
-  const atsList = useMemo(() => [...new Set(jobs.map((j) => j.ats ?? "none"))].sort(), [jobs]);
+  // counts among the jobs this page lists (not submitted), for the dropdowns
+  const listed = useMemo(() => jobs.filter((j) => j.status !== "submitted"), [jobs]);
+  const siteOptions = useMemo(() => {
+    const c: Record<string, number> = {};
+    listed.forEach((j) => (c[j.ats ?? "none"] = (c[j.ats ?? "none"] ?? 0) + 1));
+    return Object.keys(c).sort().map((a) => ({ value: a, label: a === "none" ? "No link" : a, count: c[a] }));
+  }, [listed]);
+  const tierOptions = useMemo(() => {
+    const c: Record<string, number> = {};
+    listed.forEach((j) => (c[String(j.fit_tier ?? "none")] = (c[String(j.fit_tier ?? "none")] ?? 0) + 1));
+    const names: Record<string, string> = { "1": "Tier 1 · best fit", "2": "Tier 2 · new grad", "3": "Tier 3 · entry-level", none: "No tier" };
+    return Object.keys(c).sort().map((t) => ({ value: t, label: names[t] ?? `Tier ${t}`, count: c[t] }));
+  }, [listed]);
+  const matchOf = (j: Job) => (j.match_pct == null ? "unknown" : j.match_pct >= MATCH_TARGET ? "above" : j.match_pct >= 0.6 ? "mid" : "low");
+  const matchOptions = useMemo(() => {
+    const c: Record<string, number> = {};
+    listed.forEach((j) => (c[matchOf(j)] = (c[matchOf(j)] ?? 0) + 1));
+    return [
+      { value: "above", label: `${pctText(MATCH_TARGET)} or more` },
+      { value: "mid", label: `60% to ${pctText(MATCH_TARGET)}` },
+      { value: "low", label: "Below 60%" },
+      { value: "unknown", label: "Not scored yet" },
+    ].map((o) => ({ ...o, count: c[o.value] ?? 0 }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listed]);
+  const filtering = statuses.length > 0 || tiers.length > 0 || sites.length > 0 || matches.length > 0 || q.trim() !== "";
+  const clearFilters = () => {
+    setStatuses([]);
+    setTiers([]);
+    setSites([]);
+    setMatches([]);
+    setQ("");
+  };
 
   const avgMatchToday = useMemo(() => {
     const m = jobs
@@ -179,13 +216,10 @@ export default function JobsView({ onOpenApplied }: { onOpenApplied: () => void 
     const out = jobs.filter(
       (j) =>
         j.status !== "submitted" && // applied jobs live on the Applied tab
-        (status === "all" ? j.status !== "skipped" : j.status === status) && // skipped only via their own chip
-        (tier === "all" || String(j.fit_tier) === tier) &&
-        (ats === "all" || (j.ats ?? "none") === ats) &&
-        (matchFilter === "all" ||
-          (matchFilter === "below" && j.match_pct != null && j.match_pct < MATCH_TARGET) ||
-          (matchFilter === "above" && j.match_pct != null && j.match_pct >= MATCH_TARGET) ||
-          (matchFilter === "unknown" && j.match_pct == null)) &&
+        (statuses.length ? statuses.includes(j.status) : j.status !== "skipped") && // skipped only when picked
+        (!tiers.length || tiers.includes(String(j.fit_tier ?? "none"))) &&
+        (!sites.length || sites.includes(j.ats ?? "none")) &&
+        (!matches.length || matches.includes(matchOf(j))) &&
         (!needle || `${j.company} ${j.role ?? ""}`.toLowerCase().includes(needle))
     );
     if (sort !== "tier") {
@@ -197,7 +231,8 @@ export default function JobsView({ onOpenApplied }: { onOpenApplied: () => void 
       });
     }
     return out;
-  }, [jobs, status, tier, ats, q, matchFilter, sort]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobs, statuses, tiers, sites, q, matches, sort]);
 
   const patch = (id: number, p: Partial<Job>) => setJobs((js) => js.map((j) => (j.id === id ? { ...j, ...p } : j)));
 
@@ -221,9 +256,12 @@ export default function JobsView({ onOpenApplied }: { onOpenApplied: () => void 
             {new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })} · goal {getGoal()} a day
           </p>
         </div>
-        <button className="btn primary" onClick={() => setAdding(true)}>
-          + Add jobs
-        </button>
+        <div className="head-actions">
+          {jobs.some((j) => j.ats === "workday" && ["queued", "needs_manual"].includes(j.status)) && <PreScreen onDone={load} />}
+          <button className="btn primary" onClick={() => setAdding(true)}>
+            + Add jobs
+          </button>
+        </div>
       </header>
 
       {(adding || (!jobs.length && !error)) && (
@@ -249,6 +287,12 @@ export default function JobsView({ onOpenApplied }: { onOpenApplied: () => void 
 
       <section className="kpis">
         <Kpi label="Ready for review" value={counts.ready_for_review ?? 0} tone="accent" onClick={() => setStatus("ready_for_review")} />
+        {(counts.needs_help ?? 0) > 0 && (
+          <Kpi label="Needs your help" value={counts.needs_help ?? 0} tone="warn" onClick={() => setStatus("needs_help")} />
+        )}
+        {(counts.submission_required ?? 0) > 0 && (
+          <Kpi label="Submission required" value={counts.submission_required ?? 0} tone="warn" onClick={() => setStatus("submission_required")} />
+        )}
         <Kpi label="Applied today" value={submittedToday} tone="ok" onClick={onOpenApplied} />
         <Kpi label="Applied total" value={counts.submitted ?? 0} onClick={onOpenApplied} />
         <Kpi label="In queue" value={counts.queued ?? 0} onClick={() => setStatus("queued")} />
@@ -264,11 +308,12 @@ export default function JobsView({ onOpenApplied }: { onOpenApplied: () => void 
 
       <section className="toolbar">
         <div className="seg" role="tablist">
-          <button className={status === "all" ? "on" : ""} onClick={() => setStatus("all")}>
+          <button className={statuses.length === 0 ? "on" : ""} aria-pressed={statuses.length === 0} onClick={() => setStatuses([])}>
             All <span>{jobs.length - (counts.submitted ?? 0) - (counts.skipped ?? 0)}</span>
           </button>
           {ACTIVE_STATUSES.map((s) => (
-            <button key={s} className={status === s ? "on" : ""} onClick={() => setStatus(s)}>
+            <button key={s} className={statuses.includes(s) ? "on" : ""} aria-pressed={statuses.includes(s)} onClick={() => toggleStatus(s)}>
+              {statuses.includes(s) && statuses.length > 1 && <b className="seg-check">✓</b>}
               {STATUS_LABEL[s]} <span>{counts[s] ?? 0}</span>
             </button>
           ))}
@@ -278,30 +323,20 @@ export default function JobsView({ onOpenApplied }: { onOpenApplied: () => void 
             <IconSearch />
             <input placeholder="Search company or role" value={q} onChange={(e) => setQ(e.target.value)} />
           </div>
-          <select value={tier} onChange={(e) => setTier(e.target.value)} aria-label="Fit tier">
-            <option value="all">All tiers</option>
-            <option value="1">Tier 1 · best fit</option>
-            <option value="2">Tier 2 · new grad</option>
-            <option value="3">Tier 3 · entry-level</option>
-          </select>
-          <select value={ats} onChange={(e) => setAts(e.target.value)} aria-label="Site">
-            <option value="all">All sites</option>
-            {atsList.map((a) => (
-              <option key={a}>{a}</option>
-            ))}
-          </select>
-          <select value={matchFilter} onChange={(e) => setMatchFilter(e.target.value)} aria-label="Match">
-            <option value="all">Any match</option>
-            <option value="below">Below {pctText(MATCH_TARGET)}</option>
-            <option value="above">{pctText(MATCH_TARGET)} or more</option>
-            <option value="unknown">Not scored yet</option>
-          </select>
+          <MultiSelect label="tier" allLabel="All tiers" options={tierOptions} value={tiers} onChange={setTiers} />
+          <MultiSelect label="site" allLabel="All sites" options={siteOptions} value={sites} onChange={setSites} />
+          <MultiSelect label="match range" allLabel="Any match" options={matchOptions} value={matches} onChange={setMatches} />
           <select value={sort} onChange={(e) => setSort(e.target.value as typeof sort)} aria-label="Sort">
             <option value="tier">Sort: fit tier</option>
             <option value="match_desc">Sort: match % high → low</option>
             <option value="match_asc">Sort: match % low → high</option>
           </select>
-          <button className="btn ghost icon-btn" onClick={load} title="Refresh">
+          {filtering && (
+            <button className="btn ghost small-btn" onClick={clearFilters}>
+              Clear filters
+            </button>
+          )}
+          <button className="btn ghost icon-btn" onClick={load} title="Refresh" aria-label="Refresh">
             <IconRefresh />
           </button>
         </div>
@@ -318,7 +353,9 @@ export default function JobsView({ onOpenApplied }: { onOpenApplied: () => void 
             <div className="empty-art">✦</div>
             <b>Nothing here</b>
             <span className="muted">
-              {status === "ready_for_review" ? "Press Run to fill your next batch." : "No applications match these filters."}
+              {statuses.length === 1 && statuses[0] === "ready_for_review"
+                ? "Press Run to fill your next batch."
+                : "No applications match these filters."}
             </span>
           </div>
         )}

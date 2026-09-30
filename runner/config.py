@@ -37,6 +37,10 @@ def activate(owner_id: str, required: bool = True) -> userconfig.UserConfig | No
     global RESUME_TITLE_KEYWORDS, PRIMARY_TEX, TAILORED_DIR
     cfg = userconfig.load(owner_id)
     if cfg is None:
+        # never leave another person's folder active (the server handles several people on one computer)
+        USER = HOME = PROFILE_PATH = COVER_LETTER = PRIMARY_TEX = None
+        RESUMES, RESUME_TEX, RESUME_LABELS, RESUME_FOCUS, RESUME_TITLE_KEYWORDS = {}, {}, {}, {}, {}
+        TAILORED_DIR = ROOT / "out" / "tailored"
         if required:
             raise SystemExit("This account has no files on this computer yet: open the dashboard (start.bat) and "
                              "finish the setup screens first.")

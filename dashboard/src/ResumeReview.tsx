@@ -67,6 +67,25 @@ function Card({ job, onChanged }: { job: ResumeJob; onChanged: () => void }) {
     setBusy(false);
   }
 
+  const [fillMsg, setFillMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  async function fillNow() {
+    // a run of just this job, with the tailored resume (a run already going picks it up first on its next pick instead)
+    setBusy(true);
+    setFillMsg(null);
+    try {
+      await agent("/api/run", { ids: [job.id] });
+      setFillMsg({ ok: true, text: "Filling it now with your tailored resume: a browser window is opening." });
+    } catch (e) {
+      const msg = (e as Error).message;
+      setFillMsg(
+        /already active/i.test(msg)
+          ? { ok: true, text: "A run is going: if it paused this job for tailoring, it fills it now. Otherwise it's first in the queue for the next run." }
+          : { ok: false, text: `${msg} It stays first in the queue.` }
+      );
+    }
+    setBusy(false);
+  }
+
   async function dismiss() {
     // the job leaves the Tailoring state and is filled with the best base resume on the next run
     try {
@@ -195,12 +214,18 @@ function Card({ job, onChanged }: { job: ResumeJob; onChanged: () => void }) {
               <a className="btn small-btn" href={tailoredPdfUrl(job.id)} target="_blank" rel="noreferrer">
                 Open PDF <IconExternal />
               </a>
+              {result.queued && (
+                <button className="btn primary small-btn" disabled={busy} onClick={fillNow}>
+                  Fill it now
+                </button>
+              )}
             </>
           ) : (
             result.error
           )}
         </div>
       )}
+      {fillMsg && <div className={`banner ${fillMsg.ok ? "ok-b" : "error"}`}>{fillMsg.text}</div>}
 
       <footer className="ractions">
         <button className="btn primary" disabled={busy || accepted.size === 0} onClick={build}>

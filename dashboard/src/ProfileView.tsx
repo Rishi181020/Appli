@@ -3,6 +3,9 @@ import { agent, supabase } from "./lib";
 import {
   AUTH_QUESTIONS,
   COMMON,
+  COUNTRIES,
+  US_NAMES,
+  US_STATES,
   Education,
   Experience,
   ProfileData,
@@ -195,6 +198,33 @@ export default function ProfileView({
             <Text label="Email" value={data.email} onChange={(v) => set({ email: v })} placeholder="jane@example.com" />
             <Text label="Phone (with country code)" value={data.phone} onChange={(v) => set({ phone: v })} placeholder="+1 408 555 0123" />
             <Text label="City, State" value={data.location} onChange={(v) => set({ location: v })} placeholder="San Jose, CA" />
+            <label className="pf-field">
+              <span>
+                Country you live in <em className="req">required</em>
+              </span>
+              <input list="pf-countries" value={data.country} onChange={(e) => set({ country: e.target.value })} placeholder="United States" />
+              <datalist id="pf-countries">
+                {COUNTRIES.map((c) => (
+                  <option key={c} value={c} />
+                ))}
+              </datalist>
+            </label>
+            <label className="pf-field">
+              <span>
+                State / province {US_NAMES.includes(data.country.trim().toLowerCase()) && <em className="req">required</em>}
+              </span>
+              {US_NAMES.includes(data.country.trim().toLowerCase()) ? (
+                <select value={data.state} onChange={(e) => set({ state: e.target.value })}>
+                  <option value="">—</option>
+                  {Object.values(US_STATES).map((s) => (
+                    <option key={s}>{s}</option>
+                  ))}
+                </select>
+              ) : (
+                <input value={data.state} onChange={(e) => set({ state: e.target.value })} placeholder="Ontario" />
+              )}
+              <small className="muted">Forms' Country and State questions are answered from these two.</small>
+            </label>
             <Text label="LinkedIn URL" value={data.linkedin} onChange={(v) => set({ linkedin: v })} placeholder="https://www.linkedin.com/in/…" />
             <Text label="GitHub URL" value={data.github} onChange={(v) => set({ github: v })} placeholder="https://github.com/…" />
             <Text label="Website / portfolio" value={data.website} onChange={(v) => set({ website: v })} placeholder="https://…" wide />

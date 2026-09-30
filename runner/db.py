@@ -175,6 +175,20 @@ def park_unsupported() -> int:
     return len(res.data)
 
 
+def unpark_workday() -> int:
+    """Workday jobs parked as 'not automated yet' before Workday was supported go back to the queue (once)."""
+    res = (
+        sb()
+        .table("jobs")
+        .update({"status": "queued", "status_reason": "Workday: filled page by page, you click Save and Continue"})
+        .eq("status", "needs_manual")
+        .eq("ats", "workday")
+        .or_("status_reason.ilike.%automated yet%,status_reason.ilike.%not automated%")
+        .execute()
+    )
+    return len(res.data)
+
+
 def canonical(ats: str | None, url: str | None) -> str | None:
     """One key per posting, however the link is spelled (/apply, /application?embed=true, trailing slash...)."""
     if not url:
