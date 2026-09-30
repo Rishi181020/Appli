@@ -32,6 +32,13 @@ _EXTRACT_JS = r"""
   const groupLabel = (inputs, optLabels) => {
     const fs = inputs[0].closest('fieldset');
     if (fs) { const lg = fs.querySelector('legend'); if (lg && txt(lg)) return txt(lg); }
+    // Ashby: the question title, plus its hint ("Degree — For most recent or in progress degree.")
+    const entry = inputs[0].closest('.ashby-application-form-field-entry, .ashby-application-form-input-radio-group, fieldset');
+    const title = entry && entry.querySelector('.ashby-application-form-question-title');
+    if (title && txt(title) && !optLabels.includes(txt(title))) {
+      const desc = entry.querySelector('.ashby-application-form-question-description');
+      return txt(title) + (desc && txt(desc) ? ' — ' + txt(desc) : '');
+    }
     let p = inputs[0].parentElement;
     for (let i = 0; i < 7 && p; i++, p = p.parentElement) {
       if (!inputs.every(x => p.contains(x))) continue;
@@ -55,7 +62,10 @@ _EXTRACT_JS = r"""
       out.push({id, type: 'combobox', label, options: [], required: isReq(el, label)}); return;
     }
     if (t === 'radio' || t === 'checkbox') {
-      const key = t + ':' + (el.name || el.id);
+      // radios always share a name; checkbox questions don't (Ashby names each box), so group those by question box
+      const box = t === 'checkbox' && !el.name.includes('[]') ? el.closest('fieldset, [role="group"], .ashby-application-form-field-entry, [data-field-path]') : null;
+      if (box && !box.hasAttribute('data-appli-group')) box.setAttribute('data-appli-group', 'g' + (n++));
+      const key = t + ':' + (box ? box.getAttribute('data-appli-group') : (el.name || el.id));
       (groups[key] = groups[key] || {type: t, els: []}).els.push(el); return;
     }
     let label = labelOf(el); const id = 'f' + (n++); el.setAttribute('data-appli', id);
@@ -66,6 +76,7 @@ _EXTRACT_JS = r"""
         if (tx.length < 220 && /resume|\bcv\b|cover letter|transcript/i.test(tx)) { label = tx; break; }
       }
     }
+    if (t === 'file') label = label.replace(/\b(attach|dropbox|google drive|enter manually|accepted file types:?[^]*$)/gi, ' ').replace(/\s+/g, ' ').trim();
     let type = t === 'select-one' || t === 'select-multiple' ? 'select' : t === 'textarea' ? 'textarea' : t;
     if (!['textarea','select','file','email','tel','url','number'].includes(type)) type = 'text';
     const options = type === 'select' ? [...el.options].map(o => txt(o)).filter(s => s && !/^(select|choose|please)/i.test(s)) : [];
@@ -177,13 +188,29 @@ def _click_combobox(page: Page, loc, value: str, school: bool = False):
         if q and q not in queries:
             queries.append(q)
     loc.click(timeout=3000)
+    if not school:  # a short fixed list: pick the option straight from the open menu
+        page.wait_for_timeout(300)
+        opts = _menu_options(page, loc)
+        texts = [t.strip() for t in opts.all_inner_texts()]
+        if 0 < len(texts) <= 60:
+            v = norm(value)
+            # exact, or one contains the other ("Able to relocate" in "Able to relocate to job location"); never a
+            # look-alike spelling here ("United Kingdom" for "United States")
+            target = match_option(value, texts) or next((t for t in texts if v and norm(t) and (v in norm(t) or norm(t) in v)), None)
+            if target is not None:
+                opts.nth(texts.index(target)).click()
+                return
     for q in queries:
         loc.fill("")
         loc.fill(q)
-        page.wait_for_timeout(600)
         opts = _menu_options(page, loc)
-        texts = [t.strip() for t in opts.all_inner_texts()]
-        if not texts:
+        texts: list[str] = []
+        for _ in range(8):  # up to ~2s for a searched list (schools, disciplines, cities) to arrive
+            page.wait_for_timeout(250)
+            texts = [t.strip() for t in opts.all_inner_texts() if t.strip() and not re.match(r"^(loading|searching)", t.strip(), re.I)]
+            if texts and not re.match(r"^no (options|results)", texts[0], re.I):
+                break
+        if not texts or re.match(r"^no (options|results)", texts[0], re.I):
             continue
         target = None
         if school:
@@ -237,10 +264,28 @@ def fill_field(page: Page, f: Field, value: str) -> bool:
             _click_combobox(page, loc, value, school=bool(_SCHOOL_LABEL.search(f.label)))
         elif f.type == "buttons":
             loc.locator("button", has_text=re.compile(rf"^\s*{re.escape(value)}\s*$", re.I)).click(timeout=3000)
+        elif f.type == "consent":
+            # a single box ("Still a student?", "I currently work here"); real consent questions never get an answer
+            # (answering.py leaves them for you), so a value here means "tick it"
+            if norm(value) in ("no", "false", "unchecked", "none"):
+                return True
+            box = page.locator(f'[data-appli-opt="{f.id}o0"]')
+            # click the box's visible label like a person would (forcing a hidden input can make a form re-draw and
+            # drop answers already typed, as Ashby's "Still Student?" does)
+            bid = box.get_attribute("id", timeout=2000)
+            label = page.locator(f'label[for="{bid}"]') if bid else None
+            if label is not None and label.count() and label.first.is_visible():
+                label.first.click(timeout=3000)
+            else:
+                box.check(timeout=3000, force=True)
+            if not box.is_checked():
+                return False
         elif f.type in ("radio", "checkbox"):
-            wanted = [v.strip() for v in value.split(",")] if f.type == "checkbox" else [value]
+            # "Yes, but I would require relocation" is ONE option: split on commas only when the whole text isn't one
+            whole = match_option(value, f.options) or next((o for o in f.options if norm(o) == norm(value)), None)
+            wanted = [v.strip() for v in value.split(",")] if f.type == "checkbox" and not whole else [value]
             for w in wanted:
-                opt = match_option(w, f.options)
+                opt = match_option(w, f.options) or fuzzy_option(w, f.options)  # "Master's Degree" -> "Master's"
                 if opt is None:
                     return False
                 k = f.options.index(opt)
@@ -253,12 +298,80 @@ def fill_field(page: Page, f: Field, value: str) -> bool:
         return False
 
 
-def upload(page: Page, f: Field, path: str) -> bool:
+_READ_JS = r"""
+(el) => {
+  const t = x => ((x && (x.innerText || x.textContent)) || '').replace(/\s+/g, ' ').trim();
+  if (el.tagName === 'SELECT') return el.selectedIndex > 0 || (el.value && el.selectedIndex >= 0) ? t(el.options[el.selectedIndex]) : '';
+  if (el.getAttribute('role') === 'combobox' || (el.closest && el.closest('[class*="select__control"]'))) {
+    const ctl = el.closest('[class*="select__control"], [class*="control"]') || el.parentElement;
+    const shown = ctl && ctl.querySelector('[class*="singleValue"], [class*="single-value"], [class*="multi-value__label"], [class*="multiValue"]');
+    return shown ? t(shown) : (el.value || '');
+  }
+  if (el.tagName === 'DIV' || el.tagName === 'FIELDSET') {  // Ashby Yes / No buttons
+    const on = [...el.querySelectorAll('button')].find(b => b.getAttribute('aria-pressed') === 'true' || /active|selected|checked/i.test(b.className));
+    return on ? t(on) : '';
+  }
+  if (el.type === 'file') {
+    if (el.files && el.files.length) return el.files[0].name;
+    // some forms empty the input after taking the file and only show its name next to the upload box
+    let box = el.parentElement;
+    for (let i = 0; i < 4 && box; i++, box = box.parentElement) {
+      const m = t(box).match(/[\w .()-]+\.(pdf|docx?|txt|rtf)\b/i);
+      if (m) return m[0];
+    }
+    return '';
+  }
+  return el.value || '';
+}
+"""
+
+
+def read_value(page: Page, f: Field) -> str:
+    """What the page currently shows for a field ('' = empty)."""
     try:
-        page.locator(f'[data-appli="{f.id}"]').set_input_files(path, timeout=8000)
-        return True
+        if f.type in ("radio", "checkbox", "consent"):
+            boxes = page.locator(f'[data-appli-opt^="{f.id}o"]')
+            return ", ".join(f.options[k] if k < len(f.options) else "checked"
+                             for k in range(boxes.count()) if boxes.nth(k).is_checked())
+        loc = page.locator(f'[data-appli="{f.id}"]')
+        return loc.first.evaluate(_READ_JS) if loc.count() else ""
     except Exception:
-        return False
+        return ""
+
+
+def unfilled_required(page: Page) -> list[Field]:
+    """Required questions on the page that are still empty, required uploads (a transcript) included."""
+    return [f for f in extract(page) if f.required and not read_value(page, f).strip()]
+
+
+def upload(page: Page, f: Field, path: str) -> bool:
+    """Attach a file and make sure the form took it: a page whose scripts aren't ready yet ignores the file (the input
+    holds it but the form never shows it), so it's re-sent until the file name appears on the page."""
+    from pathlib import Path
+
+    stem = Path(path).stem.lower()
+    loc = page.locator(f'[data-appli="{f.id}"]')
+    try:
+        page.wait_for_load_state("networkidle", timeout=6000)
+    except Exception:
+        pass
+    sent = False
+    for attempt in range(3):
+        try:
+            if attempt:
+                loc.set_input_files([], timeout=4000)  # clear, so the next set fires a fresh change event
+            loc.set_input_files(path, timeout=8000)
+            sent = True
+        except Exception:
+            continue
+        for _ in range(8):  # up to 2s for the form to show it
+            page.wait_for_timeout(250)
+            try:
+                if stem in page.inner_text("body", timeout=2000).lower():
+                    return True
+            except Exception:
+                break
+    return sent  # the file is in the input; this form just never shows its name
 
 
 _COVER = re.compile(r"cover letter", re.I)
@@ -267,7 +380,7 @@ _RESUME = re.compile(r"resume|\bcv\b|curriculum", re.I)
 
 def kind_of_file(f: Field) -> str | None:
     """'resume' | 'cover' | None for a file input."""
-    if f.type != "file":
+    if f.type != "file" or re.search(r"autofill", f.label, re.I):
         return None
     if _COVER.search(f.label):
         return "cover"

@@ -217,7 +217,9 @@ def _fill_pass(page, pw, fields, state, profile, bank, job, resume, resume_path,
     """Answer and fill `fields`; returns (filled, unanswered, uploads)."""
     # Only open dropdowns whose answer isn't already known from the profile (opening each one costs time).
     step = Steps()
-    need_options = [f for f in fields if f.type == "combobox" and not f.options and direct_answer(f, profile, bank) is None]
+    # Every dropdown's options are read first (big search lists like country / school / city come back empty and are
+    # typed into), so an answer is always one of the choices: a "start date" rule never answers a Yes / No dropdown.
+    need_options = [f for f in fields if f.type == "combobox" and not f.options]
     forms.discover_options(page, need_options)
 
     cover_fields = [f for f in fields if f.type == "file" and forms.kind_of_file(f) == "cover"]
@@ -262,6 +264,8 @@ def _fill_pass(page, pw, fields, state, profile, bank, job, resume, resume_path,
     step(f"typed {len(filled)} answer(s) into the page")
     for f in fields:
         kind = forms.kind_of_file(f)
+        if kind == "resume" and state.get("resume_uploaded"):
+            continue  # already attached before typing
         if kind == "resume" and forms.upload(page, f, str(resume_path)):
             uploads.append(f"resume ({key})")
         elif kind == "cover" and letter:
@@ -410,7 +414,19 @@ def process(pw, ctx, job: dict, profile: Profile, bank: dict[str, str], known: l
             page.goto(form_url, wait_until="domcontentloaded", timeout=45000)
         elif not form_url and not adapters.click_through(page, ats):
             return give_up("needs_manual", "Couldn't find the Apply button")
-        if not _wait_for_form(page):
+        loaded = _wait_for_form(page)
+        for _ in range(2):  # job boards sometimes answer "502 Bad Gateway / come back later": reload and try again
+            if loaded or not re.search(r"\b50[234]\b|bad gateway|come back (a little )?later|temporarily unavailable",
+                                       page.inner_text("body")[:600], re.I):
+                break
+            print("    the job board had a server error - reloading")
+            page.wait_for_timeout(4000)
+            page.reload(wait_until="domcontentloaded", timeout=45000)
+            loaded = _wait_for_form(page)
+        if not loaded:
+            if re.search(r"\b50[234]\b|bad gateway|service unavailable|come back (a little )?later", page.inner_text("body")[:600], re.I):
+                # the job board is down, not the posting: stays in the queue for the next run
+                return give_up("queued", "The job board was down (server error): tried again next run")
             return give_up("needs_manual", "Application form didn't load")
         if _login_wall(page):
             return give_up("needs_manual", "Login/account required to apply")
@@ -424,6 +440,15 @@ def process(pw, ctx, job: dict, profile: Profile, bank: dict[str, str], known: l
         state: dict = {"known": known}
         done: set = set()
         filled, unanswered, uploads = [], [], []
+        # The resume goes in before anything is typed: some forms (Greenhouse) read it and reset name / email / phone.
+        for f in first:
+            if forms.kind_of_file(f) == "resume" and forms.upload(page, f, str(resume_path)):
+                uploads.append(f"resume ({key})")
+                state["resume_uploaded"] = True
+                page.wait_for_timeout(2500)  # let the form finish reading it
+                step("resume uploaded")
+                first = forms.extract(page)
+                break
         # A form can reveal new fields once earlier ones are answered (e.g. race after Hispanic/Latino), so
         # re-read it after each pass and handle whatever is new.
         want_schools = len(profile.education)  # fill every education entry from the profile
@@ -456,6 +481,12 @@ def process(pw, ctx, job: dict, profile: Profile, bank: dict[str, str], known: l
                 break
 
         step("form filled")
+        answer_of = {norm(x["label"]): x["value"] for x in filled if x.get("value")}
+        for f in forms.unfilled_required(page):
+            v = answer_of.get(norm(f.label))
+            if v and forms.fill_field(page, f, v):
+                print(f"    re-typed {f.label[:60]!r} (the form had cleared it)")
+        step("checked every required answer stuck")
         for p in state.get("letter_problems", []):
             unanswered.append({"id": "cover", "label": "Cover letter", "reason": p, "required": False})
         # a question flagged earlier but filled in a later pass is no longer outstanding
@@ -463,10 +494,15 @@ def process(pw, ctx, job: dict, profile: Profile, bank: dict[str, str], known: l
         unanswered = [u for u in unanswered if not ("couldn't fill" in u["reason"] and norm(u["label"]) in filled_labels)]
 
         needs = [u for u in unanswered if u.get("required")]
-        update(
+        if needs:  # answers you save on the dashboard are typed into this tab (see poll_review)
+            _HELP[jid] = {"profile": profile, "bank": bank, "checked": 0.0}
+            print("    needs your help: " + "; ".join(f"{u['label'][:60]} ({u.get('reason', '')[:40]})" for u in needs[:6]))
+        _update_status(
             jid,
-            status="ready_for_review",
-            status_reason=(f"{len(needs)} required field(s) need you" if needs else None),
+            fallback=_ONE_PAGE_FALLBACK,
+            status="needs_help" if needs else "ready_for_review",
+            status_reason=(f"{len(needs)} required question(s) need your answer: answer them on the dashboard (typed into the "
+                           "open form for you, and saved for next time) or in the browser" if needs else None),
             resume_used=key,
             cover_letter=state.get("letter"),
             filled_fields={"fields": filled, "uploads": uploads, "captcha": _has_captcha(page)},
@@ -520,15 +556,16 @@ def _start_workday(page, job, profile, bank, known, key, resume_path, give_up):
 
 
 _STATUS_FALLBACK = {"needs_help": "submission_required", "submission_required": "ready_for_review"}
+_ONE_PAGE_FALLBACK = {"needs_help": "ready_for_review"}  # one-page forms never use 'submission_required'
 
 
-def _workday_update(jid: int, **fields):
+def _update_status(jid: int, fallback: dict | None = None, **fields):
     """Write the job row; on a database without migrations 005/006 fall back to a status it knows."""
     while True:
         try:
             return update(jid, **fields)
         except Exception as e:
-            nxt = _STATUS_FALLBACK.get(fields.get("status"))
+            nxt = (fallback or _STATUS_FALLBACK).get(fields.get("status"))
             if "status_check" not in str(e) or not nxt:
                 raise
             print(f"    note: run supabase/migrations/006_needs_help.sql (and 005) to get the '{fields['status']}' status")
@@ -542,7 +579,7 @@ def _workday_step(t: "workday.Tracked") -> str:
     browser.release(t.page)
     r = "moved"
     for _ in range(10):  # keep going while pages fill and continue without needing you
-        r = workday.step(t, lambda **fields: _workday_update(jid, **fields), reload_bank=load_bank)
+        r = workday.step(t, lambda **fields: _update_status(jid, **fields), reload_bank=load_bank)
         if r != "moved":
             break
     if r == "moved":
@@ -585,6 +622,38 @@ def poll_workday(wd: dict[int, "workday.Tracked"]):
 
 
 # ---- watching the review tabs ---------------------------------------------------------------
+_HELP: dict[int, dict] = {}  # open forms waiting for your answers: job id -> {profile, bank, checked}
+
+
+def _help_tick(jid: int, page: Page):
+    """A form that needs your help: type in answers you've saved on the dashboard since, and once no required question
+    is empty (answered here or in the browser) mark it ready for review."""
+    h = _HELP.get(jid)
+    if not h or time.time() - h["checked"] < 5:
+        return
+    h["checked"] = time.time()
+    bank = load_bank()
+    typed = 0
+    if bank != h["bank"]:
+        h["bank"] = bank
+        for f in forms.extract(page):
+            if f.type == "file" or forms.read_value(page, f).strip():
+                continue
+            val = direct_answer(f, h["profile"], bank)
+            if val and forms.fill_field(page, f, val):
+                typed += 1
+        if typed:
+            print(f"    job {jid}: typed in {typed} answer(s) you gave on the dashboard")
+    left = forms.unfilled_required(page)
+    if not left:
+        _HELP.pop(jid, None)
+        update(jid, status="ready_for_review", status_reason=None, unanswered=[])
+        print(f"    job {jid}: every required question is answered now - ready for review")
+    elif typed:
+        update(jid, unanswered=[{"id": f.id, "label": f.label, "required": True, "options": f.options,
+                                 "reason": "still empty"} for f in left])
+
+
 def poll_review(tracked: dict[int, Page]):
     for jid, page in list(tracked.items()):
         try:
@@ -592,14 +661,24 @@ def poll_review(tracked: dict[int, Page]):
         except Exception:
             closed = True
         if closed:
-            if status_of(jid) == "ready_for_review":
+            if status_of(jid) in ("ready_for_review", "needs_help"):
                 update(jid, status="queued", status_reason="Closed without submitting")
                 print(f"    job {jid}: tab closed without submitting - back in the queue")
+            _HELP.pop(jid, None)
             del tracked[jid]
             continue
-        if status_of(jid) != "ready_for_review":  # you already marked it on the dashboard
+        st = status_of(jid)
+        if st not in ("ready_for_review", "needs_help"):  # you already marked it on the dashboard
+            _HELP.pop(jid, None)
             del tracked[jid]
             continue
+        if st == "needs_help":
+            try:
+                _help_tick(jid, page)
+            except Exception as e:
+                if _CLOSED_ERR.search(str(e)):
+                    continue
+                print(f"    job {jid}: help check failed: {type(e).__name__}: {str(e)[:100]}")
         try:
             text = page.inner_text("body", timeout=1500)
         except Exception:
@@ -610,16 +689,44 @@ def poll_review(tracked: dict[int, Page]):
             del tracked[jid]
 
 
-def review_loop(ctx: BrowserContext, tracked: dict[int, Page], wd: dict[int, "workday.Tracked"]):
+def claim_resumed(paused: set[int]) -> list[dict]:
+    """Jobs this run paused for tailoring that you've since decided on (Build, or Use base resume): they're queued
+    again, so claim them for this run. Jobs you skipped or marked some other way are dropped."""
+    if not paused:
+        return []
+    rows = sb().table("jobs").select("*").in_("id", sorted(paused)).execute().data
+    out = []
+    for r in rows:
+        if r["status"] == "tailoring":
+            continue  # still waiting for you in Resume review
+        paused.discard(r["id"])
+        if r["status"] != "queued":
+            continue
+        claim = sb().table("jobs").update({"status": "filling", "status_reason": None, "attempts": r["attempts"] + 1}).eq(
+            "id", r["id"]).eq("status", "queued").execute()
+        if claim.data:
+            out.append(r)
+    return out
+
+
+def review_loop(ctx: BrowserContext, tracked: dict[int, Page], wd: dict[int, "workday.Tracked"],
+                paused: set[int] | None = None, fill_resumed=None):
+    paused = paused if paused is not None else set()
+    if paused:
+        print(f"\n{len(paused)} job(s) paused for a tailored resume. Build it (or choose Use base resume) in Resume review "
+              "and this run fills them right away. Press Stop on the dashboard to end without them.")
     if tracked or wd:
         print(f"\n{len(tracked) + len(wd)} tab(s) open for you. NOTHING has been submitted. Submit each yourself;")
         if wd:
             print(f"{len(wd)} Workday application(s): each page is filled and continued for you; questions it can't "
                   "answer show up as 'Needs your help' on the dashboard.")
         print("submissions are detected automatically. Close the browser or press Stop on the dashboard to end.")
-    while (tracked or wd) and not STOP.exists() and browser_alive(ctx):
+    while (tracked or wd or paused) and not STOP.exists() and browser_alive(ctx):
         poll_review(tracked)
         poll_workday(wd)
+        if paused and fill_resumed:
+            for job in claim_resumed(paused):
+                fill_resumed(job)
         time.sleep(2)
     poll_review(tracked)
 
@@ -664,22 +771,18 @@ def run(limit: int = 20, ids: list[int] | None = None):
         print(f"Plan: {total} job(s)")
         counts: dict[str, int] = {}
         attempted: set[int] = set()
+        paused: set[int] = set()  # jobs this run paused for tailoring: filled as soon as you decide in Resume review
         with sync_playwright() as pw:
             ctx = browser.launch(pw)
             try:
                 # `total` counts forms actually filled: dead/skipped postings don't use up a slot, and a job already
                 # tried in this run (e.g. a tab you closed) is never picked a second time.
                 filled_n = 0
-                while filled_n < total and len(attempted) < max(total * 4, 10):
-                    if STOP.exists():
-                        print("Stop requested")
-                        break
-                    job = next_job(pending, attempted)
-                    if not job:
-                        break
-                    attempted.add(job["id"])
+
+                def fill_one(job: dict, label: str) -> bool:
+                    """Fill one job; True if a form is now open for you."""
                     db_fresh()  # long runs outlive one access token
-                    print(f"[{filled_n + 1}/{total}] {job['company']} - {job['role']} ({job['ats']})")
+                    print(f"{label} {job['company']} - {job['role']} ({job['ats']})")
                     update(job["id"], run_id=run_row["id"])
                     t0, c0, j0 = time.time(), llm.usage.seconds, llm.usage.jev_seconds
                     page = process(pw, ctx, job, profile, bank, known, pending_drafts)
@@ -688,14 +791,35 @@ def run(limit: int = 20, ids: list[int] | None = None):
                     print(f"    timing: {took:.0f}s total | chat models {chat:.0f}s | Jev {jv:.1f}s | "
                           f"browser + other {max(0, took - chat - jv):.0f}s"
                           + ("  (chat calls overlapped)" if chat + jv > took else ""))
-                    if isinstance(page, workday.Tracked):
-                        wd[job["id"]] = page
-                        filled_n += 1
-                    elif page:
-                        tracked[job["id"]] = page
-                        filled_n += 1
                     st = status_of(job["id"]) or "?"
                     counts[st] = counts.get(st, 0) + 1
+                    if st == "tailoring":
+                        paused.add(job["id"])  # comes back into this run once you decide in Resume review
+                    if isinstance(page, workday.Tracked):
+                        wd[job["id"]] = page
+                    elif page:
+                        tracked[job["id"]] = page
+                    return bool(page)
+
+                def fill_resumed(job: dict):
+                    print(f"\n[resumed] {'tailored resume built' if job.get('resume_review') == 'built' else 'using the base resume'}")
+                    fill_one(job, "[resumed]")
+
+                while filled_n < total and len(attempted) < max(total * 4, 10):
+                    if STOP.exists():
+                        print("Stop requested")
+                        break
+                    resumed = claim_resumed(paused)  # jobs you just approved come first
+                    for job in resumed:
+                        fill_resumed(job)
+                    if resumed:
+                        continue
+                    job = next_job(pending, attempted)
+                    if not job:
+                        break
+                    attempted.add(job["id"])
+                    if fill_one(job, f"[{filled_n + 1}/{total}]"):
+                        filled_n += 1
                     poll_review(tracked)
                     poll_workday(wd)
                 if pending_drafts:
@@ -710,7 +834,7 @@ def run(limit: int = 20, ids: list[int] | None = None):
                 sb().table("runs").update(
                     {"finished_at": datetime.now(timezone.utc).isoformat(), "counts": {**counts, "llm": vars(llm.usage)}}
                 ).eq("id", run_row["id"]).execute()
-                review_loop(ctx, tracked, wd)
+                review_loop(ctx, tracked, wd, paused, fill_resumed)
             except BrowserClosed:
                 print("Browser was closed - stopping.")
             finally:

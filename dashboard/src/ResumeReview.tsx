@@ -76,7 +76,12 @@ function Card({ job, onChanged }: { job: ResumeJob; onChanged: () => void }) {
       await agent("/api/run", { ids: [job.id] });
       setFillMsg({ ok: true, text: "Filling it now with your tailored resume: a browser window is opening." });
     } catch (e) {
-      setFillMsg({ ok: false, text: `${(e as Error).message} It stays first in the queue.` });
+      const msg = (e as Error).message;
+      setFillMsg(
+        /already active/i.test(msg)
+          ? { ok: true, text: "A run is going: if it paused this job for tailoring, it fills it now. Otherwise it's first in the queue for the next run." }
+          : { ok: false, text: `${msg} It stays first in the queue.` }
+      );
     }
     setBusy(false);
   }
