@@ -269,11 +269,11 @@ def _fill_pass(page, pw, fields, state, profile, bank, job, resume, resume_path,
         if kind == "resume" and forms.upload(page, f, str(resume_path)):
             uploads.append(f"resume ({key})")
         elif kind == "cover" and letter:
-            with tempfile.TemporaryDirectory() as d:
-                name = re.sub(r"[^A-Za-z0-9]+", "_", profile.full_name).strip("_") or "Cover"
-                pdf = cover_letter.render_pdf(pw, letter, Path(d) / f"{name}_Cover_Letter.pdf")
-                if forms.upload(page, f, str(pdf)):
-                    uploads.append("cover letter")
+            name = re.sub(r"[^A-Za-z0-9]+", "_", profile.full_name).strip("_") or "Cover"
+            folder = (config.HOME or config.ROOT / "out") / "cover-letters" / str(job.get("id", "x"))
+            pdf = cover_letter.render_pdf(pw, letter, folder / f"{name}_Cover_Letter.pdf")
+            if forms.upload(page, f, str(pdf)):
+                uploads.append("cover letter")
         elif f.type == "file" and f.required and kind is None:
             unanswered.append({"id": f.id, "label": f.label, "reason": "file upload needs you", "required": True})
         elif f.type == "consent":
@@ -314,21 +314,29 @@ def _draft_tailoring(jid: int, job: dict, info: dict, profile_text: str):
             print(f"    job {jid}: tailored draft ready ({result['pct_before']:.0%} -> {result['pct_after']:.0%}, "
                   f"{len(result['edits'])} edit(s))")
         else:  # nothing safe to change: fill with the best base resume on the next run
-            update(jid, status="queued", resume_edits=result, resume_review="dismissed",
+            update(jid, status="queued", resume_edits={**result, "dismissed_for": resume_select.resume_version()},
+                   resume_review="dismissed",
                    status_reason="Tailoring found no safe edits; will use the best base resume")
             print(f"    job {jid}: no safe tailoring edits - back in the queue with the base resume")
     except Exception as e:
-        update(jid, status="queued", resume_review="dismissed",
+        update(jid, status="queued", resume_review="dismissed", resume_edits={"dismissed_for": resume_select.resume_version()},
                status_reason=f"Tailoring failed ({type(e).__name__}); will use the best base resume")
         print(f"    job {jid}: tailoring failed: {type(e).__name__}: {str(e)[:100]}")
 
 
 def _choose_resume(job: dict, profile: Profile) -> tuple[str, Path, dict | None, str]:
     """-> (key, pdf path, match info, action) where action is 'fill' or 'tailor'."""
+    version = resume_select.resume_version()
+    edits = job.get("resume_edits") or {}
     built = job.get("resume_file") if job.get("resume_review") == "built" else None
     if built and (config.ROOT / built).exists():
-        print(f"    resume: your tailored version ({built})")
-        return "tailored", config.ROOT / built, None, "fill"
+        if edits.get("built_for") in (None, version):  # (older builds didn't record it: trusted)
+            print(f"    resume: your tailored version ({built})")
+            return "tailored", config.ROOT / built, None, "fill"
+        print("    tailored resume was built from an older version of your resume: scoring again")
+    dismissed = job.get("resume_review") == "dismissed" and edits.get("dismissed_for") == version
+    if job.get("resume_review") == "dismissed" and not dismissed:
+        print("    earlier 'no tailoring' decision was for an older version of your resumes: checking again")
     info = None
     try:
         info = resume_select.evaluate(job)
@@ -340,13 +348,22 @@ def _choose_resume(job: dict, profile: Profile) -> tuple[str, Path, dict | None,
     key = info["chosen"]
     scores = ", ".join(f"{k} {v['pct']:.0%}" for k, v in info["scores"].items())
     by = f"Jev {info['jev_confidence']:.2f}" if info.get("chosen_by") == "jev" else "score"
-    action = "fill"
-    if (info["pct"] < config.RESUME_MATCH_THRESHOLD and job.get("resume_review") != "dismissed" and SCHEMA["tailoring"]
-            and info.get("tailorable", True)):  # PDF-only resumes can't be tailored: fill with them as they are
-        info["addable"] = tailor.addable_terms(info, profile.text)
-        action = "tailor" if info["addable"] else "fill"
+    action, why = "fill", ""
+    if info["pct"] < config.RESUME_MATCH_THRESHOLD:
+        if dismissed:
+            why = "not tailoring: you chose the base resume (or no safe edits were found) for these resumes"
+        elif not SCHEMA["tailoring"]:
+            why = "not tailoring: run supabase/migrations/002 and 003"
+        elif not info.get("tailorable", True):
+            why = f"not tailoring: the {info['labels'].get(key, key) if info.get('labels') else key} resume has no LaTeX source"
+        else:
+            info["addable"] = tailor.addable_terms(info, profile.text)
+            action = "tailor" if info["addable"] else "fill"
+            if not info["addable"]:
+                why = "not tailoring: none of the missing skills are backed by your profile or resumes"
     print(f"    resume: {key} ({info['pct']:.0%} match, chosen by {by}; {scores})"
-          + (f" -> tailoring ({len(info['addable'])} missing skill(s) to add)" if action == "tailor" else ""))
+          + (f" -> tailoring ({len(info['addable'])} missing skill(s) to add)" if action == "tailor" else "")
+          + (f"\n    {why}" if why else ""))
     return key, config.RESUMES[key], info, action
 
 
@@ -528,8 +545,13 @@ def process(pw, ctx, job: dict, profile: Profile, bank: dict[str, str], known: l
             update(jid, status="queued", status_reason="Tab was closed while filling")
             print("    tab closed - put back in the queue")
             return None
-        traceback.print_exc()
-        update(jid, status="failed", status_reason=f"{type(e).__name__}: {str(e)[:300]}")
+        if re.search(r"net::ERR_|Timeout \d+ms exceeded.*(goto|navigat)", str(e), re.I | re.S):
+            # the connection dropped or the site was too slow: nothing wrong with the job, try again next run
+            update(jid, status="queued", status_reason=f"Network problem ({str(e)[:80].splitlines()[0]}): tried again next run")
+            print(f"    network problem - back in the queue: {str(e)[:100].splitlines()[0]}")
+        else:
+            traceback.print_exc()
+            update(jid, status="failed", status_reason=f"{type(e).__name__}: {str(e)[:300]}")
         try:
             page.close()
         except Exception:

@@ -585,10 +585,12 @@ class Handler(BaseHTTPRequestHandler):
             job_id = int(body.get("job_id"))
         except (TypeError, ValueError):
             return self._json(400, {"error": "job_id is required"})
-        rows = db.sb().table("jobs").select("status").eq("id", job_id).execute().data
+        rows = db.sb().table("jobs").select("status,resume_edits").eq("id", job_id).execute().data
         if not rows:
             return self._json(404, {"error": "job not found"})
-        upd = {"resume_review": "dismissed"}
+        from .resume.select import resume_version
+
+        upd = {"resume_review": "dismissed", "resume_edits": {**(rows[0].get("resume_edits") or {}), "dismissed_for": resume_version()}}
         if rows[0]["status"] == "tailoring":
             upd.update(status="queued", status_reason="Tailoring dismissed: will use the best base resume")
         db.sb().table("jobs").update(upd).eq("id", job_id).execute()

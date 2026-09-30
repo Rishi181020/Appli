@@ -97,7 +97,10 @@ def build(job: dict, accepted: list[str]) -> dict:
         "ok": True, "file": str(pdf_path.relative_to(config.ROOT)), "pct_after": after["pct"],
         "added_words": added, "removed_words": [], "accepted": [e["id"] for e in chosen], "not_found_added": not_found,
     }
-    edits_out = {**edits, "built": {k: result[k] for k in ("pct_after", "added_words", "removed_words", "accepted", "file")}}
+    from .select import resume_version
+
+    edits_out = {**edits, "built_for": resume_version(),
+                 "built": {k: result[k] for k in ("pct_after", "added_words", "removed_words", "accepted", "file")}}
     try:
         sb().table("jobs").update(
             {"resume_file": result["file"], "resume_review": "built", "resume_edits": json.loads(json.dumps(edits_out))}

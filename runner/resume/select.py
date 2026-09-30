@@ -6,6 +6,22 @@ tailored); a PDF-only resume is scored on its extracted text (match % and fillin
 from functools import lru_cache
 
 from .. import config, jev
+
+
+def resume_version() -> str:
+    """Fingerprint of the base resumes (LaTeX sources and PDFs). A tailoring decision made for one version (a dismissal,
+    a built tailored copy) doesn't carry over to edited resumes."""
+    import hashlib
+
+    h = hashlib.sha1()
+    for key in sorted(config.RESUMES):
+        tex_path = config.RESUME_TEX.get(key)
+        pdf = config.RESUMES[key]
+        try:
+            h.update(key.encode() + (tex_path.read_bytes() if tex_path else b"") + (pdf.read_bytes() if pdf.exists() else b""))
+        except OSError:
+            continue
+    return h.hexdigest()[:12]
 from ..resume_picker import pick_resume
 from . import match, tex
 
