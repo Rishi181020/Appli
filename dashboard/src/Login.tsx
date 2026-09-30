@@ -1,5 +1,6 @@
 import { FormEvent, useState } from "react";
 import { connectRunner, supabase } from "./lib";
+import { IconBolt, IconShield, IconTarget, Logo } from "./Icons";
 
 export default function Login() {
   const [email, setEmail] = useState("");
@@ -23,10 +24,56 @@ export default function Login() {
   }
 
   return (
-    <div className="center auth-bg">
+    <div className="auth">
+      <section className="auth-hero">
+        <div className="brand">
+          <div className="logo">
+            <Logo />
+          </div>
+          <span>Appli</span>
+        </div>
+        <div>
+          <h1>
+            Your applications, <em>filled for you.</em> Submitted by you.
+          </h1>
+          <p className="lead">
+            Appli finds roles that fit, tailors your resume, and fills every form from your own profile. It always stops before Submit.
+          </p>
+        </div>
+        <ul className="auth-points">
+          <li>
+            <span className="pt-icon">
+              <IconTarget />
+            </span>
+            <div>
+              <b>Matched to your resumes</b>
+              <span>Every posting is scored ATS-style, so the best resume goes in each time.</span>
+            </div>
+          </li>
+          <li>
+            <span className="pt-icon">
+              <IconBolt />
+            </span>
+            <div>
+              <b>Forms filled in seconds</b>
+              <span>Greenhouse, Lever, Ashby, Workable, and Workday page by page.</span>
+            </div>
+          </li>
+          <li>
+            <span className="pt-icon">
+              <IconShield />
+            </span>
+            <div>
+              <b>You stay in control</b>
+              <span>Nothing is ever submitted for you, and nothing is guessed.</span>
+            </div>
+          </li>
+        </ul>
+        <p className="auth-foot">Your files stay on your computer. Your jobs and profile are private to your account.</p>
+      </section>
+      <div className="auth-side">
       <form className="login" onSubmit={submit}>
-        <div className="logo big-logo">A</div>
-        <h1>Welcome to Appli</h1>
+        <h1>Welcome back</h1>
         <p className="muted">Sign in with the email and password you were given.</p>
         <label>
           Email
@@ -40,7 +87,9 @@ export default function Login() {
         <button className="btn primary big" disabled={busy}>
           {busy ? "Signing in…" : "Sign in"}
         </button>
+        <p className="small muted">No account? Ask the person who shared Appli with you to add you.</p>
       </form>
+      </div>
     </div>
   );
 }

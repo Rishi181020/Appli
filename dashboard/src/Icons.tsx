@@ -8,7 +8,30 @@ const I = (children: ReactNode, size = 18) => (
 );
 
 export const IconList = () => I(<><path d="M8 6h13M8 12h13M8 18h13" /><circle cx="3.5" cy="6" r=".8" /><circle cx="3.5" cy="12" r=".8" /><circle cx="3.5" cy="18" r=".8" /></>);
-export const IconFolder = () => I(<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />);
+export const IconSun = () => I(<><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></>, 16);
+export const IconMoon = () => I(<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z" />, 16);
+export const IconBolt = () => I(<path d="M13 2L4 14h7l-1 8 9-12h-7z" />);
+export const IconShield = () => I(<><path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z" /><path d="M9 12l2 2 4-4" /></>);
+export const IconTarget = () => I(<><circle cx="12" cy="12" r="8" /><circle cx="12" cy="12" r="4" /><circle cx="12" cy="12" r=".8" fill="currentColor" /></>);
+
+/** Appli mark: an "A" whose crossbar is a check, on a mint-to-lime tile. */
+export function Logo({ size = 32 }: { size?: number }) {
+  return (
+    <svg viewBox="0 0 32 32" width={size} height={size} aria-hidden="true">
+      <defs>
+        <linearGradient id="appli-logo" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stopColor="#2ef5b0" />
+          <stop offset="1" stopColor="#c8ff6e" />
+        </linearGradient>
+      </defs>
+      <rect x="0" y="0" width="32" height="32" rx="9.5" fill="url(#appli-logo)" />
+      <path d="M9.2 24L16 8.5 22.8 24" fill="none" stroke="#05281c" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M12.4 18.6l2.6 2.5 4.9-5.4" fill="none" stroke="#05281c" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+export const IconFolder =() => I(<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />);
 export const IconBookmark =() => I(<path d="M6 3h12v18l-6-4-6 4z" />);
 export const IconPlay = () => I(<path d="M7 4.5v15l12-7.5z" fill="currentColor" />, 16);
 export const IconStop = () => I(<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" />, 16);

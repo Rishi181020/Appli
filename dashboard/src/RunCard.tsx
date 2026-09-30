@@ -21,8 +21,8 @@ function Ring({ value, goal }: { value: number; goal: number }) {
       <svg viewBox="0 0 84 84" width="84" height="84">
         <defs>
           <linearGradient id="rg" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0" stopColor="var(--accent)" />
-            <stop offset="1" stopColor="var(--accent2)" />
+            <stop offset="0" stopColor="#00f0a0" />
+            <stop offset="1" stopColor="#c8ff6e" />
           </linearGradient>
         </defs>
         <circle cx="42" cy="42" r={r} className="ring-bg" />
