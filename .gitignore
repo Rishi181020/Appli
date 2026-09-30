@@ -1,0 +1,29 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# each person's own files: users/<Name>/ (resumes, cover letter, profile, tailored copies, browser logins)
+users/
+# the original single-user files in the project root
+jobright_profile.md
+*.pdf
+*.xlsx
+*.xlsm
+*.csv
+*.tex
+*.docx
+/resumes/
+Rishi Resume*/
+RIshi Resume*/
+Cover letter/
+Cover Letter/
+
+# runtime
+out/
+.browser-profile/
+.venv/
+__pycache__/
+*.pyc
+node_modules/
+dashboard/dist/

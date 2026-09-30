@@ -1,0 +1,6 @@
+openpyxl
+openai
+supabase
+playwright
+python-dotenv
+pypdf
