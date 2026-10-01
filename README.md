@@ -18,8 +18,11 @@ users/Rishi Rugweda Dixit/
 
 ## Project owner (admin)
 The Supabase project is shared. Each person signs in with their own account and only sees their own rows.
-- **First time:** run in the Supabase SQL editor, in order: `supabase/schema.sql`, then `migrations/002` through `006_needs_help.sql`. 004 gives every row an owner; existing rows go to the email at its top. In Authentication → Providers → Email, turn off "Allow new users to sign up".
-- **Add a friend:** Authentication → Users → **Add user** (their email + a password, auto-confirm). Send them the project URL, the **publishable** key and their login. Never share the service-role key: nobody needs it.
+- **First time:** run in the Supabase SQL editor, in order: `supabase/schema.sql`, then `migrations/002` through `007_activity.sql`. 004 gives every row an owner; existing rows go to the email at its top. In Authentication → URL Configuration, set the **Site URL** to `http://localhost:8765` (where the email-confirmation link lands).
+- **Connection:** `shared.env` (committed) holds the Supabase URL and **publishable** key, which are public by design; each person's data stays private through row-level security. Keep the repo private: anyone with it can create an account.
+- **Add a friend:** nothing to do in Supabase. Give them access to the repo; they press **Create account** on the sign-in page, confirm their email, and add their own OpenRouter key in the setup screens. Never share the service-role key: nobody needs it.
+- Sign-ups must stay on (Authentication → Sign In / Providers → **Allow new users to sign up**). Anyone with the app can register; each account only sees its own data. Supabase's built-in email sender is limited to a few emails an hour, enough for a handful of friends (or turn off **Confirm email** to skip that step).
+- **API keys** are per person: entered in the app, checked with OpenRouter, saved only in `users/<Name>/keys.json` on that computer (git-ignored, never uploaded). An `OPENROUTER_API_KEY` in `.env` is the fallback for anyone who hasn't added their own.
 - **Your own files:** on your first sign-in, the setup screen offers **Use my existing files**. It copies `jobright_profile.md`, the three resume folders, `Cover letter/`, `resumes/tailored/` and the browser profile into `users/<your full name>/` and saves your profile to the database. The originals are left in place; delete them once you're happy.
 - You can see all data in the Supabase console; tell friends that.
 - **How the runner signs in:** at sign-in the dashboard also opens a second, separate session for the runner and hands it to the local server (`out/sessions/`, git-ignored). The runner refreshes it itself, so no password is stored in `.env` and the dashboard and runner never log each other out.
@@ -37,6 +40,8 @@ A browser window opens and fills applications one at a time (best-fit tiers firs
 Command-line equivalent: `.venv\Scripts\python -m runner run --limit 20` (or `--ids 12,40` for specific jobs). Command-line tools act as whoever last signed in on this computer's dashboard. `APPLI_HEADLESS=1` hides the browser (testing only).
 
 ## Dashboard
+The top of **Applications** shows a year of activity like GitHub's contribution graph (one square per day, darker = more applications submitted, in quarters of your daily goal), your current and longest streak, this week and the past year. Hover a day for its count; **By month** lists the numbers. Dates come from `submitted_at` (migration 007; earlier submissions are dated by their last update).
+
 Tabs: **Applications** (what still needs action, with **+ Add jobs** to paste links or upload a CSV/Excel file: ready for review, queued, needs manual, failed — submitted and skipped jobs are kept out of "All"; skipped ones are under their own chip so you can see why), **Applied** (everything you've submitted, newest first, grouped by day), **Resume review**, **Saved answers**, **Profile** and **My files** (resumes, cover letter, system check). Shows status counts, what was filled (and by which tier), the cover letter, and questions left for you. Answers you save are reused on every later form. Rules starting with `~` (e.g. `~how did you hear|referral`) match any question containing those phrases. For development: `cd dashboard && npm run dev` (proxies the Run button to the server on port 8765).
 
 ## Resume matching and tailoring

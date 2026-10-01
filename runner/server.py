@@ -187,7 +187,7 @@ def health() -> list[dict]:
     def item(ok: bool, what: str, fix: str = ""):
         out.append({"ok": ok, "what": what, "fix": "" if ok else fix})
 
-    item(bool(os.getenv("OPENROUTER_API_KEY")), "OpenRouter API key in .env", "Add OPENROUTER_API_KEY to .env and restart start.bat")
+    item(bool(os.getenv("OPENROUTER_API_KEY")), "OpenRouter API key", "Add your key on My files > API key")
     from . import llm
 
     for kind in ("fast", "write"):
@@ -299,7 +299,9 @@ class Handler(BaseHTTPRequestHandler):
                 "runner_connected": db.has_session(uid), "legacy_found": userfiles.legacy_found(),
             })
         if path == "/api/health":
-            return self._json(200, {"checks": health()})
+            with _files_lock:
+                config.activate(uid, required=False)  # this person's own key and models
+                return self._json(200, {"checks": health()})
         if path == "/api/screen":
             return self._json(200, screen_status(uid))
         if path == "/api/find":  # search preferences, progress and the latest results
@@ -422,6 +424,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/files/cover/remove":
             userfiles.remove_cover(uid)
             return self._json(200, userfiles.status(uid))
+        if path == "/api/keys/test":  # check a key without saving it
+            return self._json(200, userfiles.check_openrouter_key(str(body.get("api_key", ""))))
+        if path == "/api/keys":  # saved only in your folder on this computer; never sent back to the browser
+            return self._json(200, {"keys": userfiles.save_keys(
+                uid, body.get("api_key"), body.get("fast"), body.get("write"), body.get("jev"))})
+        if path == "/api/keys/remove":
+            return self._json(200, {"keys": userfiles.remove_key(uid)})
         if path == "/api/files/workday":  # never sent back to the browser
             userfiles.save_workday(uid, str(body.get("email", "")), body.get("password") or None)
             return self._json(200, userfiles.status(uid))

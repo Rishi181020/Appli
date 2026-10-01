@@ -8,6 +8,7 @@ const I = (children: ReactNode, size = 18) => (
 );
 
 export const IconList = () => I(<><path d="M8 6h13M8 12h13M8 18h13" /><circle cx="3.5" cy="6" r=".8" /><circle cx="3.5" cy="12" r=".8" /><circle cx="3.5" cy="18" r=".8" /></>);
+export const IconFlame = () => I(<path d="M12 22c4.4 0 7-2.9 7-6.6 0-3.6-2.4-5.9-4.2-8.4-.4 1.9-1.4 3.2-2.8 4-.3-2.9-1.6-5.6-4-8 .2 3-1.3 5.2-2.6 7.1C4.3 11.5 5 13.4 5 15.4 5 19.1 7.6 22 12 22z" />, 20);
 export const IconSun = () => I(<><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></>, 16);
 export const IconMoon = () => I(<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z" />, 16);
 export const IconBolt = () => I(<path d="M13 2L4 14h7l-1 8 9-12h-7z" />);

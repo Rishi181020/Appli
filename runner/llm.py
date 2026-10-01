@@ -28,16 +28,16 @@ class Usage:
 
 usage = Usage()
 _client: OpenAI | None = None
+_client_key = ""
 
 
 def client() -> OpenAI:
-    global _client
-    if _client is None:
-        _client = OpenAI(
-            api_key=config.require("OPENROUTER_API_KEY"),
-            base_url=config.OPENROUTER_BASE_URL,
-            default_headers={"X-Title": "Appli"},
-        )
+    """OpenRouter client for the signed-in person's key (rebuilt when the key changes: each person brings their own)."""
+    global _client, _client_key
+    key = config.require("OPENROUTER_API_KEY")
+    if _client is None or key != _client_key:
+        _client = OpenAI(api_key=key, base_url=config.OPENROUTER_BASE_URL, default_headers={"X-Title": "Appli"})
+        _client_key = key
     return _client
 
 

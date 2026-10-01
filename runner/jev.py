@@ -22,7 +22,7 @@ class JevError(RuntimeError):
 
 def model_name() -> str:
     """JEV_MODEL from .env. Missing -> JevError, so callers fall back to the chat model instead of stopping."""
-    name = os.getenv("JEV_MODEL", "").strip()
+    name = (os.getenv("JEV_MODEL") or "typesafe/jev-1.13").strip()
     if not name:
         raise JevError("JEV_MODEL is not set in .env (see .env.example)")
     return name

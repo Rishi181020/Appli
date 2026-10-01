@@ -1,17 +1,18 @@
 import { useState } from "react";
 import { Me, agent } from "./lib";
-import { CoverManager, ResumeManager } from "./Files";
+import { ApiKeyManager, CoverManager, ResumeManager } from "./Files";
 import ProfileView from "./ProfileView";
 import AddJobs from "./AddJobs";
 import { IconAlert, IconCheck } from "./Icons";
 
-const STEPS = ["Welcome", "Resumes", "Cover letter", "Profile", "Jobs", "Done"] as const;
+const STEPS = ["Welcome", "API key", "Resumes", "Cover letter", "Profile", "Jobs", "Done"] as const;
 
 type FolderStatus = Pick<Me, "folder" | "resumes" | "cover_letter" | "profile_md">;
 
 /** First sign-in on this computer: everything the app needs, once. */
 export default function Onboarding({ me, setMe, onFinish }: { me: Me; setMe: (m: Me) => void; onFinish: () => void }) {
-  const first = !me.folder ? 0 : !me.resumes.length ? 1 : !me.has_profile ? 3 : 4;
+  const keyReady = Boolean(me.keys?.own_key || me.keys?.env_key);
+  const first = !me.folder ? 0 : !keyReady ? 1 : !me.resumes.length ? 2 : !me.has_profile ? 4 : 5;
   const [step, setStep] = useState<number>(first);
   const [name, setName] = useState(me.name ?? "");
   const [busy, setBusy] = useState(false);
@@ -20,14 +21,14 @@ export default function Onboarding({ me, setMe, onFinish }: { me: Me; setMe: (m:
 
   const merge = (s: Partial<Me>) => setMe({ ...me, ...s });
   const canGo = (i: number) =>
-    i === 0 || (Boolean(me.folder) && (i === 1 || (me.resumes.length > 0 && (i <= 3 || me.has_profile))));
+    i === 0 || (Boolean(me.folder) && (i === 1 || (keyReady && (i === 2 || (me.resumes.length > 0 && (i <= 4 || me.has_profile))))));
 
   async function start() {
     setBusy(true);
     setMsg(null);
     try {
       merge(await agent<FolderStatus & { name: string }>("/api/files/start", { name }));
-      setStep(1);
+      setStep(keyReady ? 2 : 1);
     } catch (e) {
       setMsg({ ok: false, text: (e as Error).message });
     }
@@ -42,7 +43,7 @@ export default function Onboarding({ me, setMe, onFinish }: { me: Me; setMe: (m:
       const fresh = await agent<Me>("/api/me");
       setMe(fresh);
       setMsg({ ok: true, text: `Copied your files into ${r.folder}/ (the originals are untouched).` });
-      setStep(fresh.has_profile ? 5 : 3);
+      setStep(fresh.has_profile ? 6 : 4);
     } catch (e) {
       setMsg({ ok: false, text: (e as Error).message });
     }
@@ -116,14 +117,14 @@ export default function Onboarding({ me, setMe, onFinish }: { me: Me; setMe: (m:
 
       {step === 1 && (
         <section className="panel pf">
-          <h2>Your resumes</h2>
-          <ResumeManager me={me} onChange={merge} />
+          <h2>Your OpenRouter API key</h2>
+          <ApiKeyManager me={me} onChange={merge} onSaved={() => setStep(2)} />
           <footer className="pf-nav">
             <button className="btn" onClick={() => setStep(0)}>
               Back
             </button>
             <div className="spacer" />
-            <button className="btn primary" disabled={!me.resumes.length} onClick={() => setStep(2)}>
+            <button className="btn primary" disabled={!keyReady} onClick={() => setStep(2)}>
               Next
             </button>
           </footer>
@@ -132,49 +133,65 @@ export default function Onboarding({ me, setMe, onFinish }: { me: Me; setMe: (m:
 
       {step === 2 && (
         <section className="panel pf">
-          <h2>A cover letter you've written (optional)</h2>
-          <CoverManager me={me} onChange={merge} />
+          <h2>Your resumes</h2>
+          <ResumeManager me={me} onChange={merge} />
           <footer className="pf-nav">
             <button className="btn" onClick={() => setStep(1)}>
               Back
             </button>
             <div className="spacer" />
-            <button className="btn primary" onClick={() => setStep(3)}>
-              {me.cover_letter ? "Next" : "Skip"}
+            <button className="btn primary" disabled={!me.resumes.length} onClick={() => setStep(3)}>
+              Next
             </button>
           </footer>
         </section>
       )}
 
       {step === 3 && (
+        <section className="panel pf">
+          <h2>A cover letter you've written (optional)</h2>
+          <CoverManager me={me} onChange={merge} />
+          <footer className="pf-nav">
+            <button className="btn" onClick={() => setStep(2)}>
+              Back
+            </button>
+            <div className="spacer" />
+            <button className="btn primary" onClick={() => setStep(4)}>
+              {me.cover_letter ? "Next" : "Skip"}
+            </button>
+          </footer>
+        </section>
+      )}
+
+      {step === 4 && (
         <ProfileView
           firstTime={!me.has_profile}
           embedded
           onSaved={() => {
             merge({ has_profile: true, profile_md: true });
-            setStep(4);
+            setStep(5);
           }}
         />
       )}
 
-      {step === 4 && (
+      {step === 5 && (
         <section className="panel pf">
           <h2>Jobs to apply to</h2>
           <p className="muted small">Paste links or upload a list now, or skip and use <b>Find jobs</b> after setup to search job boards for roles that fit you. Each run fills the next ones, best matches first.</p>
           <AddJobs onDone={(r) => setJobsAdded((n) => n + r.inserted)} />
           <footer className="pf-nav">
-            <button className="btn" onClick={() => setStep(3)}>
+            <button className="btn" onClick={() => setStep(4)}>
               Back
             </button>
             <div className="spacer" />
-            <button className="btn primary" onClick={() => setStep(5)}>
+            <button className="btn primary" onClick={() => setStep(6)}>
               {jobsAdded ? "Next" : "Skip for now"}
             </button>
           </footer>
         </section>
       )}
 
-      {step === 5 && (
+      {step === 6 && (
         <section className="panel pf done-panel">
           <h2>
             <IconCheck /> You're set

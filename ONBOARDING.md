@@ -2,9 +2,9 @@
 
 Appli fills job applications for you and **stops before Submit**: you review every form and submit it yourself.
 
-## 1. Get these from the project owner
-- The **Supabase URL** and **publishable key** (safe to share).
-- **Your login** (email and password). They create it for you in Supabase.
+## 1. What you need
+- Access to the repo. The connection to the shared database is already in it (`shared.env`), and you create your own
+  account in the app.
 
 You also need:
 - Python 3.11+ and Node 18+.
@@ -17,25 +17,22 @@ git clone <repo-url> appli
 ```
 Then double-click **`start.bat`** (Windows) or run **`./start.sh`** (Mac/Linux).
 
-1. **The first time**, it creates `.env` and opens it. Fill in the three lines at the top and save:
-   ```
-   SUPABASE_URL=...
-   SUPABASE_PUBLISHABLE_KEY=...
-   OPENROUTER_API_KEY=...
-   ```
-2. **Run `start.bat` again.** It installs everything (a few minutes, once) and opens http://localhost:8765.
+The first time it installs everything (a few minutes) and opens http://localhost:8765. Nothing to fill in.
 
-## 3. Sign in and follow the screens (once)
-1. **Your name.** Your files go in `users/<Your Name>/` on your computer.
-2. **Resumes.** Add each version you use (SWE, AI, full-stack…) as a PDF.
+## 3. Create your account and follow the screens (once)
+1. **Create account** on the sign-in page (email + password). Open the confirmation link Supabase emails you, then sign in.
+2. **Your name.** Your files go in `users/<Your Name>/` on your computer.
+3. **API key.** Paste your OpenRouter key. It's checked with OpenRouter and saved only in your folder on this computer
+   (never uploaded); every run uses it. Change it later on **My files → API key**, where you can also pick other models.
+4. **Resumes.** Add each version you use (SWE, AI, full-stack…) as a PDF.
    - If you also add its LaTeX `main.tex`, missing skills can be added to a tailored copy for you to approve.
    - A one-line description of each resume is drafted for you; edit it if it's off.
-3. **Cover letter** (optional). One you've written before, used as the voice for new ones.
-4. **Profile.**
+5. **Cover letter** (optional). One you've written before, used as the voice for new ones.
+6. **Profile.**
    - It's read from your resume. Check each step: basics, education, experience, skills, work authorization, common answers.
    - This is the only source of facts the models use.
    - Your sponsorship and citizenship answers also decide which postings are skipped for you.
-5. **Jobs.** Paste job links (one per line) or upload a CSV/Excel file. Its columns are recognized; you confirm them.
+7. **Jobs.** Paste job links (one per line) or upload a CSV/Excel file. Its columns are recognized; you confirm them.
 
 After that, every sign-in goes straight to the dashboard. Press **Run** (or tick jobs and press **Run selected**):
 - A browser opens and fills forms one by one.
@@ -43,7 +40,8 @@ After that, every sign-in goes straight to the dashboard. Press **Run** (or tick
 
 Change files later on **My files**, and your facts on **Profile**. Add jobs any time with **+ Add jobs**.
 
-**Workday jobs:** save your Workday email + password once on **My files**. On Workday you click every Next / Save and Continue yourself; Appli fills each page before you do and leaves the company's own questions for you.
+**Workday jobs:** save your Workday email + password once on **My files**. Appli fills each Workday page and moves on by itself;
+it only stops on a page with a question it can't answer (shown as **Needs your help**), and the final Submit is always yours.
 
 ## How your data is kept separate
 - Every row (jobs, answers, runs, profile) has an owner. The database only lets you read or change your own.

@@ -3,10 +3,10 @@
 set -e
 cd "$(dirname "$0")"
 
-if [ ! -f .env ]; then
+if [ ! -f .env ] && [ ! -f shared.env ]; then
   cp .env.example .env
   echo
-  echo "First time: fill in the 3 lines at the top of .env, then run ./start.sh again."
+  echo "First time: fill in the 2 Supabase lines at the top of .env, then run ./start.sh again."
   echo
   (command -v open >/dev/null && open -t .env) || (command -v xdg-open >/dev/null && xdg-open .env) || true
   exit 0

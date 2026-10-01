@@ -2,10 +2,10 @@
 rem Appli: double-click to start. The first time it installs everything it needs (a few minutes).
 cd /d "%~dp0"
 
-if not exist .env (
+if not exist .env if not exist shared.env (
   copy /y .env.example .env >nul
   echo.
-  echo  First time: fill in the 3 lines at the top of .env ^(Notepad is opening it^),
+  echo  First time: fill in the 2 Supabase lines at the top of .env ^(Notepad is opening it^),
   echo  save it, then double-click start.bat again.
   echo.
   start "" notepad .env

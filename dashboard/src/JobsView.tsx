@@ -17,6 +17,7 @@ import RunCard, { getGoal } from "./RunCard";
 import Drawer from "./Drawer";
 import AddJobs from "./AddJobs";
 import PreScreen from "./PreScreen";
+import Activity from "./Activity";
 import MultiSelect from "./MultiSelect";
 import { IconChevron, IconPlay, IconRefresh, IconSearch } from "./Icons";
 
@@ -272,6 +273,8 @@ export default function JobsView({ onOpenApplied }: { onOpenApplied: () => void 
       )}
 
       {error && <div className="banner error">Couldn’t load jobs: {error}</div>}
+
+      {jobs.length > 0 && <Activity jobs={jobs} goal={getGoal()} />}
 
       <RunCard
         status={agentStatus}

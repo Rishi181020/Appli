@@ -80,6 +80,7 @@ export type Job = {
   resume_review?: "pending" | "built" | "dismissed" | null;
   resume_file?: string | null;
   match_pct?: number | null;
+  submitted_at?: string | null; // when it was submitted (migration 007); older rows fall back to updated_at
 };
 
 export type Answer = {
@@ -126,8 +127,8 @@ export const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").replace(
 
 /** PostgREST returns at most 1000 rows per request, so page through. */
 export async function fetchAllJobs(): Promise<Job[]> {
-  // match_pct / resume_review arrive with migrations 002 + 003; fall back gracefully until they are run
-  for (const cols of [`${LIST_COLUMNS},match_pct,resume_review`, LIST_COLUMNS]) {
+  // match_pct / resume_review arrive with migrations 002 + 003, submitted_at with 007; fall back gracefully until run
+  for (const cols of [`${LIST_COLUMNS},match_pct,resume_review,submitted_at`, `${LIST_COLUMNS},match_pct,resume_review`, LIST_COLUMNS]) {
     const out: Job[] = [];
     let failed = false;
     for (let from = 0; ; from += 1000) {
@@ -201,6 +202,7 @@ export type Me = {
   runner_connected: boolean;
   legacy_found: { profile: string; resumes: string[]; cover_letter: boolean } | null;
   workday?: { email: string; has_password: boolean };
+  keys?: { own_key: boolean; hint: string; env_key: boolean; models: { fast: string; write: string; jev: string } };
 };
 
 /** A picked file as base64 (the local server writes it into your folder). */

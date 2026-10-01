@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
+load_dotenv(ROOT / "shared.env")  # the committed public connection; .env (loaded first) wins
 
 from . import userconfig  # noqa: E402
 
@@ -12,8 +13,40 @@ from . import userconfig  # noqa: E402
 def require(name: str) -> str:
     value = os.getenv(name)
     if not value:
+        if name == "OPENROUTER_API_KEY":
+            raise SystemExit("No OpenRouter API key yet: add yours on the dashboard (My files > API key).")
         raise SystemExit(f"Missing {name} in .env (see .env.example)")
     return value
+
+
+# ---- each person's API keys (users/<Name>/keys.json, entered on the dashboard; .env values are the fallback) ----------
+KEY_NAMES = ("OPENROUTER_API_KEY", "LLM_MODEL_FAST", "LLM_MODEL_WRITE", "JEV_MODEL")
+_BASE_ENV = {k: os.getenv(k) for k in KEY_NAMES}  # what .env said, before anyone's own keys were applied
+DEFAULT_JEV_MODEL = "typesafe/jev-1.13"
+
+
+def own_keys(folder: Path | None) -> dict:
+    import json
+
+    try:
+        return json.loads((folder / "keys.json").read_text(encoding="utf-8")) if folder else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _apply_keys(folder: Path | None):
+    """Use this person's own keys when they have them, else .env's."""
+    mine = own_keys(folder)
+    for k in KEY_NAMES:
+        v = mine.get(k) or _BASE_ENV[k] or (DEFAULT_JEV_MODEL if k == "JEV_MODEL" else None)
+        if v:
+            os.environ[k] = v
+        else:
+            os.environ.pop(k, None)
+
+
+def env_key_present() -> bool:
+    return bool(_BASE_ENV["OPENROUTER_API_KEY"])
 
 
 # ---- the signed-in person's files (users/<Name>/; see runner/userconfig.py) -------------------
@@ -41,11 +74,13 @@ def activate(owner_id: str, required: bool = True) -> userconfig.UserConfig | No
         USER = HOME = PROFILE_PATH = COVER_LETTER = PRIMARY_TEX = None
         RESUMES, RESUME_TEX, RESUME_LABELS, RESUME_FOCUS, RESUME_TITLE_KEYWORDS = {}, {}, {}, {}, {}
         TAILORED_DIR = ROOT / "out" / "tailored"
+        _apply_keys(None)
         if required:
             raise SystemExit("This account has no files on this computer yet: open the dashboard (start.bat) and "
                              "finish the setup screens first.")
         return None
     USER, HOME, PROFILE_PATH, COVER_LETTER = cfg, cfg.folder, cfg.profile_path, cfg.cover_letter
+    _apply_keys(cfg.folder)
     RESUMES = {r.key: r.pdf for r in cfg.resumes}
     RESUME_TEX = {r.key: r.tex for r in cfg.resumes if r.tex and r.tex.exists()}
     RESUME_LABELS = {r.key: r.label for r in cfg.resumes}

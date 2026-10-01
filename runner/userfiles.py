@@ -37,7 +37,7 @@ def status(owner_id: str) -> dict:
     cfg = userconfig.load(owner_id)
     if cfg is None:
         return {"folder": None, "resumes": [], "cover_letter": None, "profile_md": False,
-                "workday": {"email": "", "has_password": False}}
+                "workday": {"email": "", "has_password": False}, "keys": keys_status(None)}
     return {
         "folder": cfg.folder.relative_to(ROOT).as_posix(),
         "name": cfg.name,
@@ -46,7 +46,84 @@ def status(owner_id: str) -> dict:
         "cover_letter": cfg.cover_letter.name if cfg.cover_letter and cfg.cover_letter.exists() else None,
         "profile_md": cfg.profile_path.exists(),
         "workday": workday_status(cfg),
+        "keys": keys_status(cfg),
     }
+
+
+# ---- API keys: each person's own OpenRouter key, kept only in their folder on this computer ---------------------------
+def keys_status(cfg: UserConfig | None) -> dict:
+    """Never returns a key, only whether there is one (and its last 4 characters)."""
+    from . import config
+
+    mine = config.own_keys(cfg.folder if cfg else None)
+    key = mine.get("OPENROUTER_API_KEY", "")
+    return {
+        "own_key": bool(key), "hint": key[-4:] if key else "", "env_key": config.env_key_present(),
+        "models": {"fast": mine.get("LLM_MODEL_FAST", ""), "write": mine.get("LLM_MODEL_WRITE", ""),
+                   "jev": mine.get("JEV_MODEL", "")},
+    }
+
+
+def check_openrouter_key(key: str) -> dict:
+    """Ask OpenRouter whether a key works (no tokens spent). -> {ok, label, limit, usage} or {ok: False, error}."""
+    import httpx
+
+    key = (key or "").strip()
+    if not key:
+        return {"ok": False, "error": "Enter your OpenRouter API key"}
+    try:
+        r = httpx.get("https://openrouter.ai/api/v1/key", headers={"Authorization": f"Bearer {key}"}, timeout=15)
+    except Exception as e:
+        return {"ok": False, "error": f"Couldn't reach OpenRouter: {type(e).__name__}"}
+    if r.status_code == 401:
+        return {"ok": False, "error": "OpenRouter says this key isn't valid"}
+    if r.status_code != 200:
+        return {"ok": False, "error": f"OpenRouter answered {r.status_code}"}
+    d = (r.json() or {}).get("data") or {}
+    return {"ok": True, "label": d.get("label") or "", "limit": d.get("limit"), "usage": d.get("usage")}
+
+
+def save_keys(owner_id: str, api_key: str | None, fast: str | None = None, write: str | None = None,
+              jev: str | None = None) -> dict:
+    """Save this person's key (checked with OpenRouter first) and optional model choices. Blank key = keep the saved one."""
+    import json
+
+    from . import config
+
+    cfg = _need(owner_id)
+    cur = config.own_keys(cfg.folder)
+    if api_key and api_key.strip():
+        check = check_openrouter_key(api_key)
+        if not check["ok"]:
+            raise FileError(check["error"])
+        cur["OPENROUTER_API_KEY"] = api_key.strip()
+    elif not cur.get("OPENROUTER_API_KEY") and not config.env_key_present():
+        raise FileError("Enter your OpenRouter API key")
+    for name, v in (("LLM_MODEL_FAST", fast), ("LLM_MODEL_WRITE", write), ("JEV_MODEL", jev)):
+        if v is not None:
+            v = v.strip()
+            if v and not re.fullmatch(r"~?[\w.-]+/[\w.:-]+", v):
+                raise FileError(f"'{v}' doesn't look like an OpenRouter model slug (vendor/model-name)")
+            if v:
+                cur[name] = v
+            else:
+                cur.pop(name, None)
+    (cfg.folder / "keys.json").write_text(json.dumps(cur, indent=1), encoding="utf-8")
+    config.activate(owner_id)
+    return keys_status(cfg)
+
+
+def remove_key(owner_id: str) -> dict:
+    import json
+
+    from . import config
+
+    cfg = _need(owner_id)
+    cur = config.own_keys(cfg.folder)
+    cur.pop("OPENROUTER_API_KEY", None)
+    (cfg.folder / "keys.json").write_text(json.dumps(cur, indent=1), encoding="utf-8")
+    config.activate(owner_id)
+    return keys_status(cfg)
 
 
 # ---- Workday login: one email + password for every company's Workday site (stored only in this folder) ------------

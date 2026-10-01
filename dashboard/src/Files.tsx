@@ -2,8 +2,8 @@ import { useState } from "react";
 import { Me, ResumeFile, agent, fileToBase64 } from "./lib";
 import { IconAlert, IconCheck, IconRefresh } from "./Icons";
 
-type FolderStatus = Pick<Me, "folder" | "resumes" | "cover_letter" | "profile_md" | "workday">;
-type OnChange = (s: FolderStatus) => void;
+type FolderStatus = Pick<Me, "folder" | "resumes" | "cover_letter" | "profile_md" | "workday" | "keys">;
+type OnChange = (s: Partial<Me>) => void;
 
 /** A button that opens a file picker. */
 function Pick({ label, accept, onFile, primary, disabled }: { label: string; accept: string; onFile: (f: File) => void; primary?: boolean; disabled?: boolean }) {
@@ -225,6 +225,121 @@ export function CoverManager({ me, onChange }: { me: FolderStatus; onChange: OnC
   );
 }
 
+type Keys = NonNullable<Me["keys"]>;
+
+/** Your own OpenRouter key: checked with OpenRouter, kept only in your folder on this computer, used for every run. */
+export function ApiKeyManager({ me, onChange, onSaved }: { me: Me; onChange: (s: Partial<Me>) => void; onSaved?: () => void }) {
+  const keys: Keys = me.keys ?? { own_key: false, hint: "", env_key: false, models: { fast: "", write: "", jev: "" } };
+  const [key, setKey] = useState("");
+  const [show, setShow] = useState(false);
+  const [models, setModels] = useState(keys.models);
+  const [advanced, setAdvanced] = useState(Boolean(keys.models.fast || keys.models.write || keys.models.jev));
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  async function save() {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await agent<{ keys: Keys }>("/api/keys", { api_key: key, ...(advanced ? models : {}) });
+      onChange({ keys: r.keys });
+      setKey("");
+      setMsg({ ok: true, text: "Saved on this computer. Every run uses it from now on." });
+      onSaved?.();
+    } catch (e) {
+      setMsg({ ok: false, text: (e as Error).message });
+    }
+    setBusy(false);
+  }
+
+  async function remove() {
+    if (!confirm("Remove your saved OpenRouter key from this computer?")) return;
+    setBusy(true);
+    try {
+      onChange({ keys: (await agent<{ keys: Keys }>("/api/keys/remove", {})).keys });
+      setMsg({ ok: true, text: "Removed." });
+    } catch (e) {
+      setMsg({ ok: false, text: (e as Error).message });
+    }
+    setBusy(false);
+  }
+
+  return (
+    <div className="pf-list">
+      <p className="muted small">
+        Appli uses your own <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer">OpenRouter</a> key for form answers,
+        cover letters and resume matching (a typical day costs cents). It's checked with OpenRouter, then saved only in your folder on
+        this computer: it's never uploaded or shown again.
+      </p>
+      <div className="row wrap">
+        {keys.own_key ? (
+          <span className="chip-tag ok-tag">
+            <IconCheck /> Your key ••••{keys.hint}
+          </span>
+        ) : keys.env_key ? (
+          <span className="chip-tag">Using the shared key from .env</span>
+        ) : (
+          <span className="chip-tag">No key yet</span>
+        )}
+      </div>
+      <div className="pf-grid">
+        <label className="pf-field wide">
+          <span>{keys.own_key ? "Replace your key" : "OpenRouter API key"}</span>
+          <div className="row">
+            <input
+              type={show ? "text" : "password"}
+              value={key}
+              onChange={(e) => setKey(e.target.value)}
+              placeholder="sk-or-v1-…"
+              autoComplete="off"
+              spellCheck={false}
+              style={{ flex: 1 }}
+            />
+            <button type="button" className="btn ghost small-btn" onClick={() => setShow((s) => !s)}>
+              {show ? "Hide" : "Show"}
+            </button>
+          </div>
+        </label>
+      </div>
+      <button type="button" className="btn ghost small-btn" style={{ alignSelf: "flex-start" }} onClick={() => setAdvanced((a) => !a)}>
+        {advanced ? "Hide model choices" : "Choose models (optional)"}
+      </button>
+      {advanced && (
+        <div className="pf-grid">
+          <label className="pf-field">
+            <span>Fast model (form answers)</span>
+            <input value={models.fast} onChange={(e) => setModels({ ...models, fast: e.target.value })} placeholder="deepseek/deepseek-v4.1-flash" />
+          </label>
+          <label className="pf-field">
+            <span>Writing model (cover letters, essays)</span>
+            <input value={models.write} onChange={(e) => setModels({ ...models, write: e.target.value })} placeholder="openai/gpt-6-luna" />
+          </label>
+          <label className="pf-field">
+            <span>Jev decision model</span>
+            <input value={models.jev} onChange={(e) => setModels({ ...models, jev: e.target.value })} placeholder="typesafe/jev-1.13" />
+          </label>
+          <p className="small muted wide">Leave a box empty to use the default. Exact slugs from openrouter.ai/models.</p>
+        </div>
+      )}
+      <div className="row">
+        <button className="btn primary small-btn" disabled={busy || (!key.trim() && !advanced)} onClick={save}>
+          {busy ? "Checking…" : keys.own_key && !key.trim() ? "Save model choices" : "Check & save"}
+        </button>
+        {keys.own_key && (
+          <button className="btn ghost small-btn" disabled={busy} onClick={remove}>
+            Remove key
+          </button>
+        )}
+      </div>
+      {msg && (
+        <div className={`banner ${msg.ok ? "ok-b" : "error"}`}>
+          {msg.ok ? <IconCheck /> : <IconAlert />} {msg.text}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** One email + password for every company's Workday site: typed into Workday's sign-in page for you. */
 export function WorkdayLogin({ me, onChange }: { me: Me; onChange: OnChange }) {
   const saved = me.workday ?? { email: "", has_password: false };
@@ -343,6 +458,10 @@ export default function FilesView({ me, onChange }: { me: Me; onChange: OnChange
       <section className="panel">
         <h2>Cover letter</h2>
         <CoverManager me={me} onChange={onChange} />
+      </section>
+      <section className="panel">
+        <h2>API key</h2>
+        <ApiKeyManager me={me} onChange={onChange} />
       </section>
       <section className="panel">
         <h2>Workday login</h2>
