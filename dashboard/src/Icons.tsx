@@ -15,19 +15,22 @@ export const IconBolt = () => I(<path d="M13 2L4 14h7l-1 8 9-12h-7z" />);
 export const IconShield = () => I(<><path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z" /><path d="M9 12l2 2 4-4" /></>);
 export const IconTarget = () => I(<><circle cx="12" cy="12" r="8" /><circle cx="12" cy="12" r="4" /><circle cx="12" cy="12" r=".8" fill="currentColor" /></>);
 
-/** Appli mark: an "A" whose crossbar is a check, on a mint-to-lime tile. */
+/** Appli mark: an "A" whose crossbar is a check, on a mint-to-lime tile. The check crosses over the right leg
+ *  (a tile-coloured stroke underneath cuts the gap) and carries on past it. Same mark as docs/assets/logo.svg. */
 export function Logo({ size = 32 }: { size?: number }) {
+  const line = { fill: "none", strokeLinecap: "round", strokeLinejoin: "round" } as const;
   return (
     <svg viewBox="0 0 32 32" width={size} height={size} aria-hidden="true">
       <defs>
-        <linearGradient id="appli-logo" x1="0" y1="0" x2="1" y2="1">
+        <linearGradient id="appli-logo" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="32" y2="32">
           <stop offset="0" stopColor="#2ef5b0" />
           <stop offset="1" stopColor="#c8ff6e" />
         </linearGradient>
       </defs>
       <rect x="0" y="0" width="32" height="32" rx="9.5" fill="url(#appli-logo)" />
-      <path d="M9.2 24L16 8.5 22.8 24" fill="none" stroke="#05281c" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M12.4 18.6l2.6 2.5 4.9-5.4" fill="none" stroke="#05281c" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M8.6 24.4L16 7.6 23.4 24.4" stroke="#05281c" strokeWidth="3.2" {...line} />
+      <path d="M11.6 18.2l3 2.9 8.6-9.2" stroke="url(#appli-logo)" strokeWidth="6" {...line} />
+      <path d="M11.6 18.2l3 2.9 8.6-9.2" stroke="#05281c" strokeWidth="3.2" {...line} />
     </svg>
   );
 }
