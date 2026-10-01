@@ -20,8 +20,14 @@
 </p>
 
 <p align="center">
+  <b>20 applications for $0.03</b> in a recent run, using your own model key.<br>
+  Simplify+ and Jobright each cost <b>$39.99 a month</b>.
+</p>
+
+<p align="center">
   <a href="ONBOARDING.md"><b>Get started</b></a> &nbsp;|&nbsp;
   <a href="#what-it-does">What it does</a> &nbsp;|&nbsp;
+  <a href="#what-it-costs">What it costs</a> &nbsp;|&nbsp;
   <a href="#how-a-job-moves">How a job moves</a> &nbsp;|&nbsp;
   <a href="#every-day">Every day</a> &nbsp;|&nbsp;
   <a href="#safety">Safety</a>
@@ -45,13 +51,23 @@
 - **Skips postings that rule you out:** no sponsorship, US citizens only, clearance required, or closed.
 - **Finds new postings** on public job boards and the SimplifyJobs lists, already scored against your resumes.
 
+## What it costs
+
+| | What you pay |
+| --- | --- |
+| **Appli** | **$0.03 for 20 applications** in a recent run. No subscription: you pay OpenRouter for the model calls with your own key. Even at 20 a day, that's roughly $1 a month. |
+| Simplify+ | $39.99 a month |
+| Jobright | $39.99 a month |
+
+<p><sub>Appli's cost is the OpenRouter usage from one real run of 20 applications; it varies with the models you pick and how many cover letters and essays a form asks for. Competitor prices are their listed monthly plans as of October 2026.</sub></p>
+
 ## Get started
 
-You need Python 3.11+, Node 18+, your own [OpenRouter](https://openrouter.ai/keys) key, and a login from the project owner.
+You need Python 3.11+, Node 18+ and your own [OpenRouter](https://openrouter.ai/keys) key with a little credit.
 
-1. Clone the repo, then double-click **`start.bat`** (Windows) or run **`./start.sh`** (Mac/Linux).
-2. The first time, it opens `.env`. Fill in the three lines at the top (Supabase URL, publishable key, OpenRouter key) and start it again.
-3. Sign in at http://localhost:8765 and follow the setup screens once: name, resumes, cover letter, profile, jobs.
+1. Clone the repo, then double-click **`start.bat`** (Windows) or run **`./start.sh`** (Mac/Linux). The first time it installs everything (a few minutes). There's nothing to fill in: the shared database connection comes from `shared.env`.
+2. At http://localhost:8765, **Create account** (email + password), open the confirmation link you're emailed, and sign in.
+3. Follow the setup screens once: name, OpenRouter key, resumes, cover letter, profile, jobs.
 
 The full walkthrough is in **[ONBOARDING.md](ONBOARDING.md)**.
 
@@ -96,13 +112,13 @@ Command-line equivalent: `.venv\Scripts\python -m runner run --limit 20` (or `--
 
 | Tab               | What's on it                                                                                                                                                                                                                             |
 | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Applications**  | What still needs action: ready for review, queued, needs manual, failed. **+ Add jobs** pastes links or uploads a CSV/Excel file. Submitted and skipped jobs are kept out of "All"; skipped ones have their own chip so you can see why. |
+| **Applications**  | Your activity heatmap and streaks against your daily goal, then what still needs action: ready for review, queued, needs manual, failed. **+ Add jobs** pastes links or uploads a CSV/Excel file. Submitted and skipped jobs are kept out of "All"; skipped ones have their own chip so you can see why. |
 | **Find jobs**     | New postings that fit you, to add with a tick.                                                                                                                                                                                           |
 | **Applied**       | Everything you've submitted, newest first, grouped by day.                                                                                                                                                                               |
 | **Resume review** | Tailored resume drafts, one tickable change at a time.                                                                                                                                                                                   |
 | **Saved answers** | Answers reused on every later form. Rules starting with `~` (e.g. `~how did you hear\|referral`) match any question containing those phrases.                                                                                            |
 | **Profile**       | The facts every model call reads.                                                                                                                                                                                                        |
-| **My files**      | Resumes, cover letter, Workday login and the system check.                                                                                                                                                                               |
+| **My files**      | Resumes, cover letter, your OpenRouter key (and other models, if you want them), Workday login and the system check.                                                                                                                    |
 
 Each job shows its status, what was filled (and by which tier), the cover letter, and questions left for you.
 
@@ -137,7 +153,7 @@ Each resume lives in its own folder in `users/<Name>/` with its LaTeX source (`R
 <details>
 <summary><b>Jev decisions, match % and the Tailoring pause</b></summary>
 
-**Jev** (`typesafe/jev-1.13` on OpenRouter, same API key) is a decision model: it picks, it doesn't write. Each call takes about half a second and costs fractions of a cent.
+**Jev** (`typesafe/jev-1.13` on OpenRouter, same key as everything else) is a decision model: it picks, it doesn't write. Each call takes about half a second and costs fractions of a cent.
 
 - **Known answers:** every question not answered from your profile goes to Jev in one request per form. It picks the form's option, or matches the question to one you've answered before even if it's worded differently, and outputs that saved answer. If it isn't confident (below 60%), the question is left for you. Short free text it can't match goes to DeepSeek; essays and cover letters go to Luna, in parallel.
 - **Learning:** answers to factual yes/no and dropdown questions are saved as **Learned** answers for next time. Essays, free text, legal and consent questions, and anything about one company or office are never learned. Edit a learned answer on Saved answers and it becomes yours. `python -m runner learn` seeds this from forms already filled.
@@ -204,8 +220,10 @@ Every education entry in your profile is filled (a second block is opened with "
 
 The Supabase project is shared. Each person signs in with their own account and only sees their own rows.
 
-- **First time:** run in the Supabase SQL editor, in order: `supabase/schema.sql`, then `migrations/002` through `006_needs_help.sql`. 004 gives every row an owner; existing rows go to the email at its top. In Authentication → Providers → Email, turn off "Allow new users to sign up".
-- **Add a friend:** Authentication → Users → **Add user** (their email + a password, auto-confirm). Send them the project URL, the **publishable** key and their login. Never share the service-role key: nobody needs it.
+- **First time:** run in the Supabase SQL editor, in order: `supabase/schema.sql`, then `migrations/002` through `007_activity.sql`. 004 gives every row an owner; existing rows go to the email at its top. 007 records when each job was submitted (the activity heatmap and streaks).
+- **The connection is committed.** `shared.env` holds the project URL and the **publishable** key, so nobody has to set anything up; a value in a git-ignored `.env` overrides it. Never put the service-role key in either: nobody needs it.
+- **Who can join:** people create their own accounts on the sign-in page, which needs Authentication → Sign In / Providers → "Allow new users to sign up" turned on (with email confirmation). Because the repo is public, that means anyone who clones it can make an account. To keep Appli invite-only, turn sign-ups off and add people under Authentication → Users → **Invite user**.
+- **API keys:** each person adds their own OpenRouter key on **My files → API key**. It's checked with OpenRouter and stored only in `users/<Name>/keys.json` on their computer, never uploaded. A key in `.env` is used for anyone on that computer who hasn't added their own.
 - **Your own files:** on your first sign-in, the setup screen offers **Use my existing files**. It copies `jobright_profile.md`, the three resume folders, `Cover letter/`, `resumes/tailored/` and the browser profile into `users/<your full name>/` and saves your profile to the database. The originals are left in place; delete them once you're happy.
 - You can see all data in the Supabase console; tell friends that.
 - **How the runner signs in:** at sign-in the dashboard also opens a second, separate session for the runner and hands it to the local server (`out/sessions/`, git-ignored). The runner refreshes it itself, so no password is stored in `.env` and the dashboard and runner never log each other out.
