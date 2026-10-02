@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 
 from . import llm
 from .profile import MONTHS, Profile
+from .style import STYLE, clean
 
 
 @dataclass
@@ -227,8 +228,12 @@ _OPEN = re.compile(
 
 
 # "If yes, please provide details" style boxes only apply when an earlier answer triggers them.
+# A box that only applies after a particular earlier answer: "If yes, ...", "If you selected Other, ...", or one that
+# OPENS with "If you have / If applicable ...". A trailing qualifier ("... real-world problems if applicable") is not a
+# follow-up: that question stands on its own and gets answered.
 _FOLLOW_UP = re.compile(
-    r"\bif (the answer is|you (answered|selected|chose|checked|said)|yes|so|applicable|other|you have)\b|"
+    r"\bif (the answer is|you (answered|selected|chose|checked|said)|yes|so|other)\b|"
+    r"^\W*if (applicable|you have|you were|you are|relevant)\b|"
     r"please (provide|explain|give|list|describe) (the )?(details|name|names|more)|\bif\b.{0,40}\b(yes|other)\b",
     re.I,
 )
@@ -284,6 +289,10 @@ For each field return a value. Rules:
 - If neither the profile nor the resume settles it, use null. Missing information is NEVER a "No":
   do not answer yes/no questions they don't explicitly settle (career fairs attended, citizenship of another
   country, prior employment somewhere, etc.).
+- Free-text values follow the writing style below (option values are copied exactly as given).
+
+""" + STYLE + """
+
 Return JSON: {"answers": {"<field id>": <string or null>, ...}}"""
 
 
@@ -320,6 +329,12 @@ Rules:
 - First person, plain and specific, no filler or cliches. Match the length the question implies
   (default 80-150 words; stay within any stated character limit).
 - If the question needs company-specific knowledge you don't have, keep it general and honest.
+- If part of the question isn't covered by the facts (a tool, a technology, an experience they don't list), answer the part
+  that is covered and simply leave the rest out. Never mention the profile, the resume, missing information, or what the
+  candidate can't speak to: the reader must only see the candidate's own answer.
+
+""" + STYLE + """
+
 Return only the answer text."""
 
 
@@ -329,7 +344,7 @@ def _open_answer(f: Field, profile: Profile, resume_text: str, job: dict) -> str
         f"JOB: {job.get('role')} at {job.get('company')}\nJOB DESCRIPTION:\n{job.get('description', '(not available)')}\n\n"
         f"QUESTION: {f.label}"
     )
-    return llm.chat_text(_OPEN_SYSTEM, user, purpose=f"essay: {f.label}")
+    return clean(llm.chat_text(_OPEN_SYSTEM, user, purpose=f"essay: {f.label}"))
 
 
 # ---- tier 2a: Jev decides from what is already known ----------------------------------------
@@ -494,7 +509,7 @@ def answer_fields(
             pending_choice = []
         for f in pending_choice:
             raw = answers.get(f.id)
-            val = match_option(raw, f.options) if (raw and f.options) else raw
+            val = match_option(raw, f.options) if (raw and f.options) else clean(raw)  # options stay exact
             if val in (None, ""):
                 res.unanswered.append(
                     {"id": f.id, "label": f.label, "options": f.options, "required": f.required, "reason": "not in profile"}

@@ -8,6 +8,7 @@ from pypdf import PdfReader
 
 from . import llm
 from .profile import Profile
+from .style import STYLE, clean
 
 
 @lru_cache(maxsize=8)
@@ -22,6 +23,9 @@ Rules:
 - Mention the company name and role title once, in the opening sentence.
 - 3 short paragraphs, under 220 words, first person, specific and plain. No cliches, no filler, no placeholders.
 - Start with "Dear Hiring Team," and end with "Sincerely," followed by the candidate's name.
+
+""" + STYLE + """
+
 Return only the letter text."""
 
 _NUM = re.compile(r"\d[\d,.]*%?\+?")
@@ -48,13 +52,14 @@ def generate(profile: Profile, resume: str, job: dict) -> tuple[str, list[str]]:
         + (f"CANDIDATE'S OWN SAMPLE COVER LETTER (style only):\n{sample}\n\n" if sample else "")
         + f"JOB: {job.get('role')} at {job.get('company')}\nJOB DESCRIPTION:\n{job.get('description', '(not available)')}"
     )
-    letter = llm.chat_text(system, user, max_tokens=900, purpose="cover letter")
+    letter = clean(llm.chat_text(system, user, max_tokens=900, purpose="cover letter"))
     bad = ungrounded_numbers(letter, source)
     if bad:  # one regeneration, then flag
         letter = llm.chat_text(
             system + f"\nDo NOT use these numbers, they are not in the resume: {bad}.", user, max_tokens=900,
             purpose="cover letter (redo: bad numbers)",
         )
+        letter = clean(letter)
         bad = ungrounded_numbers(letter, source)
     return letter, [f"unverified number: {b}" for b in bad]
 
