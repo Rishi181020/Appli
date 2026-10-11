@@ -40,6 +40,8 @@ After that, every sign-in goes straight to the dashboard. Press **Run** (or tick
 
 Change files later on **My files**, and your facts on **Profile**. Add jobs any time with **+ Add jobs**.
 
+Then open **Experience bank** and press **Import my resumes, profile and cover letter**. Upload anything else you've done (old resumes, papers, project write-ups). For jobs your resumes match poorly, Appli writes a new resume from the bank for you to approve in **Resume review**.
+
 **Workday jobs:** save your Workday email + password once on **My files**. Appli fills each Workday page and moves on by itself;
 it only stops on a page with a question it can't answer (shown as **Needs your help**), and the final Submit is always yours.
 

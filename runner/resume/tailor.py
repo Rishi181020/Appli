@@ -18,13 +18,13 @@ _TOKEN = re.compile(r"[A-Za-z0-9+#./'-]+")
 
 # fallback placement when Jev is unavailable: category -> words that identify a Skills line label
 _LINE_HINTS = {
-    "language": ("language",),
-    "framework": ("framework", "frontend", "backend", "full stack", "product", "ml"),
-    "database": ("database", "data"),
-    "tool": ("tool", "infra", "engineering", "devops"),
-    "platform": ("tool", "infra", "cloud", "engineering"),
+    "language": ("language", "engineering"),
+    "framework": ("framework", "frontend", "backend", "full stack", "product", "ml", "ai"),
+    "database": ("database", "data", "store"),
+    "tool": ("tool", "infra", "cloud", "devops", "engineering", "delivery", "integration"),
+    "platform": ("cloud", "tool", "infra", "platform", "devops", "integration", "engineering"),
     "certification": ("tool", "infra", "engineering"),
-    "concept": ("system", "backend", "ai", "engineering"),
+    "concept": ("system", "backend", "ai", "engineering", "integration", "ways"),
 }
 
 

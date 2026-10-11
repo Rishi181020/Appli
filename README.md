@@ -81,6 +81,7 @@ users/Rishi Rugweda Dixit/
   Rishi Resume AI Eng/ ...
   Cover letter/                   your own letter: the voice for generated ones
   tailored/<job id>/              tailored resumes
+  bank/                           experience bank: bank.json + the documents you uploaded to it
 ```
 
 ## How a job moves
@@ -115,7 +116,8 @@ Command-line equivalent: `.venv\Scripts\python -m runner run --limit 20` (or `--
 | **Applications**  | Your activity heatmap and streaks against your daily goal, then what still needs action: ready for review, queued, needs manual, failed. **+ Add jobs** pastes links or uploads a CSV/Excel file. Submitted and skipped jobs are kept out of "All"; skipped ones have their own chip so you can see why. |
 | **Find jobs**     | New postings that fit you, to add with a tick.                                                                                                                                                                                           |
 | **Applied**       | Everything you've submitted, newest first, grouped by day.                                                                                                                                                                               |
-| **Resume review** | Tailored resume drafts, one tickable change at a time.                                                                                                                                                                                   |
+| **Resume review** | Tailored resume drafts: one tickable change at a time, or a whole resume built from your experience bank to read, edit and approve.                                                                                                     |
+| **Experience bank** | Everything you've done, in full (every resume, papers, projects, long descriptions). Low-match jobs get a resume written from it.                                                                                                     |
 | **Saved answers** | Answers reused on every later form. Rules starting with `~` (e.g. `~how did you hear\|referral`) match any question containing those phrases.                                                                                            |
 | **Profile**       | The facts every model call reads.                                                                                                                                                                                                        |
 | **My files**      | Resumes, cover letter, your OpenRouter key (and other models, if you want them), Workday login and the system check.                                                                                                                    |
@@ -145,6 +147,14 @@ Each resume lives in its own folder in `users/<Name>/` with its LaTeX source (`R
 - **Every job:** the posting's requirements (languages, tools, concepts) are extracted, and every resume is scored on how many it covers (required terms count double). The best one is uploaded, and the scores are shown on the job.
 - **Below 80%:** the form is still filled with the best resume, and a tailored version is drafted for **Resume review**. Each change is one tickable item with before/after, the exact words added and removed, and the sentence in your own materials that proves it. Terms you don't have anywhere are listed as **gaps** and never added; rejected edits and the reason are shown under **What went wrong**.
 - **Build (= approve):** the job goes back to the front of the queue (even if it was already filled with the base resume, unless you submitted it) and is filled again with the tailored PDF; **Fill it now** starts that right away. The PDF is compiled from your LaTeX with only the ticked changes and saved in `users/<Name>/tailored/<job id>/` (with the `.tex` and a `.changes.md` log). Any later fill of that job uses the tailored PDF.
+- **With an experience bank** (2+ roles, projects or papers in it), a low match builds a whole new resume for the job instead of adding skills to the base one:
+  1. **Plan:** a model reads the posting and the bank and picks 1 or 2 pages, the section order and headings, and which entries go in (with how many bullets each).
+  2. **Write:** every bullet comes with a word-for-word quote from the bank entry it's based on. Only skills that appear in the bank or profile go in the Skills lines.
+  3. **Adversarial review:** a second, different model (`LLM_MODEL_CRITIC`, default the fast model) acts as a skeptical hiring manager and fact-checker: unsupported or inflated claims, changed numbers, AI-sounding wording, a weak layout. The writer revises, up to twice, and the last review is of the final draft.
+  4. **Code checks:** a bullet is dropped if its quote isn't really in the entry or it has a number the entry doesn't. Skills not in the bank are removed.
+  5. **Render:** your own LaTeX template, header and education; the least relevant bullets are trimmed until it fits the pages, and spare bullets fill a short page.
+  - In **Resume review** you see the PDF, the layout and why, every bullet with its source quote, the reviewer's remaining points and anything left out. Edit or remove bullets and skills, **Rebuild PDF**, then **Approve**: the job goes to the front of the queue with that PDF. A job with a skills-only draft has **Build from my experience bank**.
+  - Fill the bank on **Experience bank**: **Import my resumes, profile and cover letter**, then upload anything else (PDF, Word, LaTeX, text, Markdown) or type entries. Text is copied word for word, not summarized.
 - **One-time:** run `supabase/migrations/002_resume_tailoring.sql` in the Supabase SQL editor.
 - **Commands:** `python -m runner resume-check` (compile your LaTeX resumes), `python -m runner tailor --id 16 [--force] [--build]` (dry run for one job).
 

@@ -260,6 +260,25 @@ _LOGISTICS = re.compile(r"in[- ]person|on[- ]?site|in[- ]office|office|relocat|c
 _TRUE_CONSENT = re.compile(r"privacy|data protection|gdpr|consent|terms|background|drug|criminal|penalty|oath|certify|attest", re.I)
 
 
+# Ashby's Yes / No declarations ("I certify the information is correct", "you consent to background checks",
+# "we will retain your information") are general sign-offs, answered Yes. A question about a criminal record still isn't.
+_DECLARATION = re.compile(r"certif|declar|\bconsent|acknowledg|i agree|i understand|"
+                          r"information (is |above )?(true|correct|accurate)|retain your (information|data)|"
+                          r"privacy|data protection|background check|terms", re.I)
+_CRIMINAL_Q = re.compile(r"have you (ever )?been (convicted|charged|arrested|found guilty)|pending (criminal )?charges|"
+                         r"(do|have) you (have )?(a |any )?criminal (record|conviction|offen[cs]e|history)", re.I)
+
+
+def ashby_declaration(f: Field, job: dict) -> bool:
+    return (job.get("ats") == "ashby" and f.type == "buttons" and bool(_DECLARATION.search(f.label))
+            and not _CRIMINAL_Q.search(f.label) and _not_logistics(f.label))
+
+
+def _not_logistics(label: str) -> bool:
+    """False for "I understand this is an in-person role": logistics are answered from the profile, not with a Yes."""
+    return not (_LOGISTICS.search(label) and not _TRUE_CONSENT.search(label))
+
+
 def sensitive(label: str) -> bool:
     if not _SENSITIVE.search(label):
         return False
@@ -461,6 +480,8 @@ def answer_fields(
                 {"id": f.id, "label": f.label, "required": f.required, "options": f.options,
                  "reason": f"your profile says \"{amb}\", which fits several options here: pick yours once (saved for next time)"}
             )
+        elif ashby_declaration(f, job):
+            res.values[f.id], res.tiers[f.id] = "Yes", "direct"
         elif sensitive(f.label):
             res.unanswered.append(
                 {"id": f.id, "label": f.label, "required": f.required, "options": f.options,
@@ -485,7 +506,6 @@ def answer_fields(
         try:
             values, confs, to_chat = _jev_batch(pending_choice, profile, known or [], job)
             chat_ids = {f.id for f in to_chat}
-            unsettled = []
             for f in pending_choice:
                 if f.id in chat_ids:
                     continue
@@ -493,9 +513,10 @@ def answer_fields(
                 if val:
                     res.values[f.id], res.tiers[f.id] = val, "jev"
                     res.confidence[f.id] = round(confs.get(f.id, 0.0), 2)
-                else:
-                    unsettled.append(f)
-            pending_choice = to_chat + unsettled
+                else:  # unsure or "the profile doesn't say": yours to answer, never handed to a model to guess
+                    res.unanswered.append({"id": f.id, "label": f.label, "options": f.options, "required": f.required,
+                                           "reason": f"not settled by your profile (confidence {confs.get(f.id, 0.0):.2f})"})
+            pending_choice = to_chat
         except Exception as e:  # Jev outage: fall back to the chat model for this form
             res.notes.append(f"Jev unavailable, used the chat model: {str(e)[:120]}")
 

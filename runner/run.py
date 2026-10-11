@@ -115,16 +115,20 @@ def status_of(job_id: int) -> str | None:
     return rows[0]["status"] if rows else None
 
 
+# A tab you may have submitted without the runner seeing the confirmation: never queued again on its own (that could
+# send the same application twice); you mark it submitted or re-queue it on the dashboard.
+UNCONFIRMED = "The tab closed before a submission was seen: Mark submitted if you sent it, otherwise Re-queue"
+
+
 def reset_stale() -> int:
-    """Jobs left 'filling'/'ready_for_review' by an earlier run have no open tab any more."""
-    res = (
-        sb()
-        .table("jobs")
-        .update({"status": "queued", "status_reason": "Reset after an earlier run ended"})
-        .in_("status", ["filling", "ready_for_review", "submission_required", "needs_help"])
-        .execute()
-    )
-    return len(res.data)
+    """Jobs left open by an earlier run have no tab any more. Mid-fill ones go back to the queue; ones that were
+    open for you may have been submitted, so they wait for you."""
+    db = sb().table("jobs")
+    n = len(db.update({"status": "queued", "status_reason": "Reset after an earlier run ended"})
+            .eq("status", "filling").execute().data)
+    n += len(db.update({"status": "needs_manual", "status_reason": UNCONFIRMED})
+             .in_("status", ["ready_for_review", "submission_required", "needs_help"]).execute().data)
+    return n
 
 
 def queued_count() -> int:
@@ -251,6 +255,8 @@ def _fill_pass(page, pw, fields, state, profile, bank, job, resume, resume_path,
     for fid, value in res.values.items():
         f = by_id[fid]
         if forms.fill_field(page, f, value):
+            if job.get("ats") == "ashby":
+                page.wait_for_timeout(250)  # Ashby saves each answer to its server as it's typed: one at a time
             entry = {"label": f.label, "value": value if len(value) < 400 else value[:400] + "…", "tier": res.tiers[fid]}
             if fid in res.confidence:
                 entry["confidence"] = res.confidence[fid]
@@ -304,8 +310,37 @@ def _save_match(jid: int, info: dict):
             print(f"    resume match not saved: {type(e).__name__}: {str(e)[:100]}")
 
 
-def _draft_tailoring(jid: int, job: dict, info: dict, profile_text: str):
-    """Background: draft the tailored resume, then hand the job to Resume review (or back to the queue)."""
+def bank_ready() -> bool:
+    """The experience bank has enough to build whole resumes from (roles / projects / papers, not just skills)."""
+    from . import bank
+
+    try:
+        return len([e for e in bank.load()["entries"] if e["kind"] not in ("skills", "narrative", "education")]) >= 2
+    except Exception:
+        return False
+
+
+def _draft_tailoring(jid: int, job: dict, info: dict, profile: Profile):
+    """Background: draft the tailored resume, then hand the job to Resume review (or back to the queue).
+    With an experience bank, a whole resume is built for the job (planned, written, reviewed by a second model);
+    without one, missing skills are added to the best base resume."""
+    if bank_ready():
+        from .resume import bankbuild
+
+        try:
+            r = bankbuild.build_draft(job, info, profile, log=lambda m: print(m.replace("    ", f"    job {jid}: ", 1)))
+            update(jid, resume_edits=r, resume_review="pending",
+                   status_reason=f"Resume built from your experience bank ({r['pages']} page{'s' if r['pages'] > 1 else ''}, "
+                                 f"match {(r['pct_before'] or 0):.0%} -> {(r['pct_after'] or 0):.0%}): review it")
+            print(f"    job {jid}: bank resume ready for review ({r['pages']} page(s), {len(r['dropped'])} bullet(s) dropped by checks)")
+            return
+        except Exception as e:
+            print(f"    job {jid}: bank resume failed ({type(e).__name__}: {str(e)[:100]}) - trying skills-only tailoring")
+            if not info.get("tailorable", True):
+                update(jid, status="queued", resume_review="dismissed", resume_edits={"dismissed_for": resume_select.resume_version()},
+                       status_reason=f"Building from the bank failed ({type(e).__name__}); will use the best base resume")
+                return
+    profile_text = profile.text
     try:
         result = tailor.propose(job, info, profile_text)
         if result["edits"]:
@@ -354,6 +389,9 @@ def _choose_resume(job: dict, profile: Profile) -> tuple[str, Path, dict | None,
             why = "not tailoring: you chose the base resume (or no safe edits were found) for these resumes"
         elif not SCHEMA["tailoring"]:
             why = "not tailoring: run supabase/migrations/002 and 003"
+        elif bank_ready():
+            action = "tailor"  # a resume built for this job from the experience bank
+            info["addable"] = []
         elif not info.get("tailorable", True):
             why = f"not tailoring: the {info['labels'].get(key, key) if info.get('labels') else key} resume has no LaTeX source"
         else:
@@ -362,7 +400,8 @@ def _choose_resume(job: dict, profile: Profile) -> tuple[str, Path, dict | None,
             if not info["addable"]:
                 why = "not tailoring: none of the missing skills are backed by your profile or resumes"
     print(f"    resume: {key} ({info['pct']:.0%} match, chosen by {by}; {scores})"
-          + (f" -> tailoring ({len(info['addable'])} missing skill(s) to add)" if action == "tailor" else "")
+          + ((" -> building a resume for this job from your experience bank" if bank_ready() else
+              f" -> tailoring ({len(info['addable'])} missing skill(s) to add)") if action == "tailor" else "")
           + (f"\n    {why}" if why else ""))
     return key, config.RESUMES[key], info, action
 
@@ -420,7 +459,7 @@ def process(pw, ctx, job: dict, profile: Profile, bank: dict[str, str], known: l
         if action == "tailor":
             update(jid, status="tailoring", resume_review=None,
                    status_reason=f"Best resume matches {match_info['pct']:.0%}: drafting a tailored version")
-            pending_drafts.append(_BG.submit(_draft_tailoring, jid, job, match_info, profile.text))
+            pending_drafts.append(_BG.submit(_draft_tailoring, jid, job, match_info, profile))
             page.close()
             return None
 
@@ -448,6 +487,7 @@ def process(pw, ctx, job: dict, profile: Profile, bank: dict[str, str], known: l
         if _login_wall(page):
             return give_up("needs_manual", "Login/account required to apply")
 
+        saves = forms.AshbySaves(page) if ats == "ashby" else None
         first = forms.extract(page)
         step(f"application form loaded ({len(first)} fields)")
         if sum(1 for f in first if f.type not in ("file", "consent")) < 3:
@@ -504,6 +544,20 @@ def process(pw, ctx, job: dict, profile: Profile, bank: dict[str, str], known: l
             if v and forms.fill_field(page, f, v):
                 print(f"    re-typed {f.label[:60]!r} (the form had cleared it)")
         step("checked every required answer stuck")
+        if saves:  # the page showing an answer isn't enough on Ashby: Submit only counts answers its server saved
+            for attempt in (1, 2):
+                answered = [f for f in forms.extract(page) if f.type != "file" and answer_of.get(norm(f.label))]
+                missed = saves.unsaved(answered)
+                if not missed:
+                    break
+                for f in missed:
+                    if attempt == 2:
+                        unanswered.append({"id": f.id, "label": f.label, "required": f.required,
+                                           "reason": "Ashby didn't save this answer: check it in the browser"})
+                    elif forms.refill(page, f, answer_of[norm(f.label)]):
+                        print(f"    re-typed {f.label[:60]!r} (Ashby hadn't saved it)")
+                        page.wait_for_timeout(400)
+            step("waited for Ashby to save every answer")
         for p in state.get("letter_problems", []):
             unanswered.append({"id": "cover", "label": "Cover letter", "reason": p, "required": False})
         # a question flagged earlier but filled in a later pass is no longer outstanding
@@ -636,8 +690,8 @@ def poll_workday(wd: dict[int, "workday.Tracked"]):
                 print(f"    workday job {jid}: {type(e).__name__}: {str(e)[:120]}")
                 continue
         if r == "closed":
-            update(jid, status="queued", status_reason="Workday tab closed before submitting")
-            print(f"    job {jid}: Workday tab closed without submitting - back in the queue")
+            update(jid, status="needs_manual", status_reason=UNCONFIRMED)
+            print(f"    job {jid}: Workday tab closed, no submission seen - mark it on the dashboard")
             del wd[jid]
         elif r == "submitted":
             del wd[jid]
@@ -684,8 +738,8 @@ def poll_review(tracked: dict[int, Page]):
             closed = True
         if closed:
             if status_of(jid) in ("ready_for_review", "needs_help"):
-                update(jid, status="queued", status_reason="Closed without submitting")
-                print(f"    job {jid}: tab closed without submitting - back in the queue")
+                update(jid, status="needs_manual", status_reason=UNCONFIRMED)
+                print(f"    job {jid}: tab closed, no submission seen - mark it on the dashboard")
             _HELP.pop(jid, None)
             del tracked[jid]
             continue
@@ -862,7 +916,7 @@ def run(limit: int = 20, ids: list[int] | None = None):
             finally:
                 for jid in list(tracked) + list(wd):  # anything still waiting has no tab once we exit
                     if status_of(jid) in ("ready_for_review", "submission_required", "needs_help"):
-                        update(jid, status="queued", status_reason="Runner stopped before it was submitted")
+                        update(jid, status="needs_manual", status_reason=UNCONFIRMED)
                 try:
                     ctx.close()
                 except Exception:

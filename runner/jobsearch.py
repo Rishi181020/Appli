@@ -4,6 +4,8 @@ Sources (all public, no scraping, no account):
   - company job boards: Greenhouse / Lever / Ashby list every opening with its description; Workday is searched per
     title. The companies are the ones already in the person's jobs plus any careers links they add.
   - community new-grad / internship lists (SimplifyJobs on GitHub, updated daily; carries sponsorship flags).
+  - remote job boards with a public feed (Remote OK, We Work Remotely, Remotive, Working Nomads, Jobspresso,
+    Landing.jobs, PowerToFly); each listing is followed to the company's own application form when it has one.
 Pipeline: fetch -> filter by the person's search preferences (titles, level, location, age, excluded words) and drop
 anything already in their jobs -> rank -> for the top N: read the posting, run the same sponsorship / citizenship /
 clearance screen as a run (patterns + Jev), and score it against their resumes (match %).
@@ -37,7 +39,7 @@ class Prefs:
     days: int = 30  # posted within
     exclude: list[str] = field(default_factory=lambda: ["senior", "sr.", "staff", "principal", "lead", "manager",
                                                         "director", "head of", "architect"])
-    sources: list[str] = field(default_factory=lambda: ["boards", "lists"])
+    sources: list[str] = field(default_factory=lambda: ["boards", "lists", "remote"])
     companies: list[str] = field(default_factory=list)  # extra careers links (Greenhouse / Lever / Ashby / Workday)
     score_top: int = 40  # how many of the best candidates get the full screen + resume match
 
@@ -184,6 +186,136 @@ def from_lists(levels: list[str], log) -> list[Found]:
                                  _iso(x.get("date_posted")), "", x.get("sponsorship") or "", x.get("category") or ""))
             log(f"  {label} ({repo}): {n} open postings")
     return out
+
+
+# ---- source: remote job boards --------------------------------------------------------------------------------
+# Public feeds only. Sites without one (FlexJobs, JustRemote and Virtual Vocations are paid; Arc, Wellfound, Remote.co,
+# Skip the Drive, Pangian and Career Vault have no feed) and freelance marketplaces (Upwork, Fiverr, Toptal...) aren't
+# searched. A listing links to the board's page: resolve_apply() finds the company's own application form behind it.
+def _rss_items(c: httpx.Client, url: str) -> list[dict]:
+    from email.utils import parsedate_to_datetime
+
+    out = []
+    for it in re.findall(r"<item>(.*?)</item>", c.get(url).text, re.S):
+        def tag(t):
+            m = re.search(rf"<{t}[^>]*>(.*?)</{t}>", it, re.S)
+            return re.sub(r"^<!\[CDATA\[(.*)\]\]>$", r"\1", m.group(1).strip(), flags=re.S) if m else ""
+        try:
+            posted = parsedate_to_datetime(tag("pubDate")).date().isoformat()
+        except (TypeError, ValueError):
+            posted = None
+        out.append({"title": html.unescape(tag("title")), "link": tag("link"), "posted": posted, "region": tag("region"),
+                    "creator": tag("dc:creator"), "body": tag("content:encoded") or tag("description")})
+    return out
+
+
+def _remote(loc: str) -> str:
+    loc = re.sub(r"\s+", " ", html.unescape(loc or "")).strip(" ,")
+    return loc if _REMOTE.search(loc) else ("Remote" + (f" ({loc})" if loc else ""))
+
+
+def _remoteok(c):
+    for x in c.get("https://remoteok.com/api").json()[1:]:  # [0] is the API's terms
+        if x.get("url") and x.get("position"):
+            yield Found(_key(x["url"]), x.get("company") or "", x["position"], _remote(x.get("location")), x["url"],
+                        detect_ats(x["url"]), "Remote OK", _iso(x.get("date")), _text(x.get("description", "")))
+
+
+def _wwr(c):
+    for x in _rss_items(c, "https://weworkremotely.com/remote-jobs.rss"):
+        company, _, title = x["title"].partition(": ")
+        if title and x["link"]:
+            yield Found(_key(x["link"]), company, title, _remote(x["region"]), x["link"], detect_ats(x["link"]),
+                        "We Work Remotely", x["posted"], _text(x["body"]))
+
+
+def _remotive(c):
+    for x in c.get("https://remotive.com/api/remote-jobs").json().get("jobs", []):
+        if x.get("url"):
+            yield Found(_key(x["url"]), x.get("company_name") or "", x.get("title") or "",
+                        _remote(x.get("candidate_required_location")), x["url"], detect_ats(x["url"]), "Remotive",
+                        _iso(x.get("publication_date")), _text(x.get("description", "")))
+
+
+def _workingnomads(c):
+    for x in c.get("https://www.workingnomads.com/api/exposed_jobs/").json():
+        if x.get("url"):
+            yield Found(_key(x["url"]), x.get("company_name") or "", x.get("title") or "", _remote(x.get("location")),
+                        x["url"], detect_ats(x["url"]), "Working Nomads", _iso(x.get("pub_date")),
+                        _text(x.get("description", "")))
+
+
+def _jobspresso(c):
+    for x in _rss_items(c, "https://jobspresso.co/feed/?post_type=job_listing"):
+        company, _, loc = html.unescape(x["creator"]).partition("<br>")
+        if x["link"]:
+            yield Found(_key(x["link"]), company.strip(), x["title"], _remote(re.sub(r"^[^\w]+", "", loc)), x["link"],
+                        detect_ats(x["link"]), "Jobspresso", x["posted"], _text(x["body"]))
+
+
+def _landing(c):
+    for page in range(5):
+        jobs = c.get("https://landing.jobs/api/v1/jobs", params={"limit": 50, "offset": page * 50}).json()
+        for x in jobs:
+            if x.get("remote") and x.get("url"):
+                slug = re.search(r"/at/([\w-]+)/", x["url"])
+                yield Found(_key(x["url"]), slug.group(1).replace("-", " ").title() if slug else "", x.get("title") or "",
+                            "Remote", x["url"], detect_ats(x["url"]), "Landing.jobs", _iso(x.get("published_at")),
+                            _text(" ".join(x.get(k) or "" for k in ("role_description", "main_requirements", "nice_to_have"))))
+        if len(jobs) < 50:
+            break
+
+
+def _powertofly(c):
+    for x in c.get("https://powertofly.com/jobs/rss").json().get("items", []):
+        if x.get("link") and re.search(r"remote", f"{x.get('type')} {x.get('job_location')}", re.I):
+            yield Found(_key(x["link"]), x.get("description") or "", x.get("title") or "", _remote(x.get("job_location")),
+                        x["link"], detect_ats(x["link"]), "PowerToFly", _iso(x.get("published_on")))
+
+
+REMOTE_FEEDS = {"Remote OK": _remoteok, "We Work Remotely": _wwr, "Remotive": _remotive,
+                "Working Nomads": _workingnomads, "Jobspresso": _jobspresso, "Landing.jobs": _landing,
+                "PowerToFly": _powertofly}
+
+
+def from_remote(log) -> list[Found]:
+    def one(item):
+        name, feed = item
+        try:
+            with httpx.Client(timeout=30, follow_redirects=True, headers=UA) as c:
+                return name, list(feed(c)), None
+        except Exception as e:
+            return name, [], type(e).__name__
+
+    out = []
+    with ThreadPoolExecutor(max_workers=len(REMOTE_FEEDS)) as ex:
+        for name, jobs, err in ex.map(one, REMOTE_FEEDS.items()):
+            log(f"  {name}: " + (f"couldn't load ({err})" if err else f"{len(jobs)} remote postings"))
+            out += jobs
+    return out
+
+
+# a posting on an ATS the runner can fill (not a careers home page or an "automation notice")
+_ATS_POSTING = re.compile(
+    r"https?://(?:job-boards\.|boards\.)?greenhouse\.io/[\w-]+/jobs/\d+[^\s\"'<>]*|"
+    r"https?://jobs\.lever\.co/[\w.-]+/[0-9a-f-]{36}[^\s\"'<>]*|"
+    r"https?://jobs\.ashbyhq\.com/[\w.%-]+/[0-9a-f-]{36}[^\s\"'<>]*|"
+    r"https?://apply\.workable\.com/[\w-]+/j/[0-9A-F]{6,}[^\s\"'<>]*|"
+    r"https?://[\w-]+\.wd\d+\.myworkdayjobs\.com/[^\s\"'<>]*/job/[^\s\"'<>]+", re.I)
+
+
+def resolve_apply(f: Found, c: httpx.Client) -> None:
+    """A remote-board listing -> the company's own application form, when the board's page (or the redirect behind its
+    link) leads to one the runner can fill."""
+    try:
+        r = c.get(f.url)
+    except Exception:
+        return
+    for u in [str(r.url), *_ATS_POSTING.findall(r.text[:400_000])]:
+        u = html.unescape(u).rstrip("/.\\")
+        if detect_ats(u) in SUPPORTED and (u == str(r.url) or _ATS_POSTING.fullmatch(u)):
+            f.url, f.ats, f.key = u, detect_ats(u), _key(u)
+            return
 
 
 # ---- source: company job boards -------------------------------------------------------------------------------
@@ -492,6 +624,8 @@ def search(log=print) -> dict:
         boards = company_boards(prefs.companies)
         log(f"  reading {len(boards)} company job boards...")
         found += from_boards(boards, prefs.titles, log)
+    if "remote" in prefs.sources:
+        found += from_remote(log)
 
     have = set()
     for j in all_jobs("url,dedupe_key"):
@@ -511,8 +645,30 @@ def search(log=print) -> dict:
         if why:
             counts[why] = counts.get(why, 0) + 1
             continue
-        f.rank = rank(f, prefs)
         kept.append(f)
+    # remote-board listings that made it through: find the company's own form behind each (ranks it as fillable)
+    via_board = [f for f in kept if f.source in REMOTE_FEEDS]
+    if via_board:
+        log(f"  following {len(via_board)} remote-board listing(s) to the company's application form...")
+
+        def follow(f):
+            with httpx.Client(timeout=15, follow_redirects=True, headers=UA) as c:
+                resolve_apply(f, c)
+
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            list(ex.map(follow, via_board))
+        n = sum(f.ats in SUPPORTED for f in via_board)
+        log(f"  {n} of them lead to a form Appli can fill")
+        before = len(kept)
+        kept = [f for f in kept if not (f.source in REMOTE_FEEDS and f.key in have)]
+        if len(kept) < before:
+            counts["already in your jobs"] = counts.get("already in your jobs", 0) + before - len(kept)
+        uniq: dict[str, Found] = {}
+        for f in kept:  # the same posting listed on two boards (or on a board and a company's own board)
+            uniq.setdefault(f.key, f)
+        kept = list(uniq.values())
+    for f in kept:
+        f.rank = rank(f, prefs)
     kept.sort(key=lambda f: (-f.rank, f.company))
     counts["matched"] = len(kept)
     log("Filtered: " + ", ".join(f"{k} {v}" for k, v in counts.items()))

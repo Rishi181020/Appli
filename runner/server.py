@@ -6,6 +6,7 @@ folder in users/, their rows in the database). The runner itself never submits a
 """
 import base64
 import binascii
+import contextlib
 import json
 import mimetypes
 import os
@@ -34,13 +35,6 @@ _proc: subprocess.Popen | None = None
 _lock = threading.Lock()
 _files_lock = threading.Lock()  # config.activate() is process-wide: one person's file request at a time
 _tokens: dict[str, tuple[float, dict]] = {}  # access token -> (checked at, {id, email})
-
-
-def _tail(n: int = 60) -> list[str]:
-    try:
-        return LOG.read_text(encoding="utf-8", errors="replace").splitlines()[-n:]
-    except OSError:
-        return []
 
 
 def _progress(lines: list[str]) -> dict:
@@ -304,6 +298,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"checks": health()})
         if path == "/api/screen":
             return self._json(200, screen_status(uid))
+        if path == "/api/bank":  # the experience bank (entries + uploaded files)
+            from . import bank
+
+            with _files_lock:
+                if config.activate(uid, required=False) is None:
+                    return self._json(400, {"error": "Finish the setup screens first"})
+                return self._json(200, {**bank.load(), "summary": bank.summary()})
         if path == "/api/find":  # search preferences, progress and the latest results
             from dataclasses import asdict
 
@@ -331,9 +332,12 @@ class Handler(BaseHTTPRequestHandler):
         user = self._user()
         if not user:
             return self._json(401, {"error": "Sign in again"})
+        # adding jobs reads up to 200 links (minutes) and needs no per-person files: it doesn't hold the files lock
+        files = contextlib.nullcontext() if path in ("/api/jobs/preview", "/api/jobs/import") else _files_lock
         try:
-            with _files_lock, db.as_user(user["token"], user["id"]):
-                config.activate(user["id"], required=False)
+            with files, db.as_user(user["token"], user["id"]):
+                if files is _files_lock:
+                    config.activate(user["id"], required=False)
                 return self._post_api(path, body, user)
         except userfiles.FileError as e:
             return self._json(400, {"error": str(e)})
@@ -450,6 +454,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._jobs(body, save=True)
 
         # ---- resume tailoring
+        if path.startswith("/api/bank"):
+            return self._bank(path, body, uid)
         if path == "/api/resume/build":
             return self._resume_build(body)
         if path == "/api/resume/dismiss":
@@ -554,6 +560,67 @@ class Handler(BaseHTTPRequestHandler):
             r["added"] = True
         jobsearch.save_found(found)
         return self._json(200, result)
+
+    def _bank(self, path: str, body: dict, uid: str):
+        """The experience bank: add and edit entries, and build / rebuild / approve a resume for one job from it."""
+        from . import bank
+        from .profile import load_profile
+        from .resume import bankbuild
+
+        try:
+            if path == "/api/bank/upload":
+                data = _b64(body.get("data"))
+                if not data:
+                    return self._json(400, {"error": "Choose a file"})
+                return self._json(200, bank.add_document(str(body.get("filename", "document.pdf")), data))
+            if path == "/api/bank/import":
+                return self._json(200, bank.import_existing())
+            if path == "/api/bank/entry":
+                return self._json(200, {"entry": bank.upsert_entry(body.get("entry") or {})})
+            if path == "/api/bank/entry/delete":
+                bank.delete_entry(str(body.get("id", "")))
+                return self._json(200, {"ok": True})
+            if path == "/api/bank/file/delete":
+                bank.delete_file(str(body.get("name", "")))
+                return self._json(200, {"ok": True})
+
+            job_id = int(body.get("job_id"))
+            rows = db.sb().table("jobs").select("*").eq("id", job_id).execute().data
+            if not rows:
+                return self._json(404, {"error": "job not found"})
+            job = rows[0]
+            profile = load_profile(config.PROFILE_PATH, config.PRIMARY_TEX)
+            if path == "/api/bank/build":  # a minute of model calls: in the background, so the dashboard stays usable
+                code, out = start_task("bankbuild", uid, ["bankbuild", "--id", str(job_id)],
+                                       "Building a resume from your bank")
+                return self._json(code, out)
+            if path == "/api/bank/rebuild":  # after editing bullets in Resume review
+                r = bankbuild.rebuild(job, {"bullets": body.get("bullets") or {}, **({"skills": body["skills"]} if "skills" in body else {})}, profile)
+                db.sb().table("jobs").update({"resume_edits": r}).eq("id", job_id).execute()
+                return self._json(200, {"ok": True, "pages": r["pages"], "edits": r})
+            if path == "/api/bank/approve":
+                from .ats import SUPPORTED
+                from .resume.select import resume_version
+
+                r = dict(job.get("resume_edits") or {})
+                if r.get("mode") != "bank":
+                    return self._json(400, {"error": "This job has no resume built from the bank"})
+                r["built_for"] = resume_version()
+                upd = {"resume_file": r["file"], "resume_review": "built", "resume_edits": r}
+                if job["status"] == "submitted":
+                    msg = "Saved. You already submitted this application, so it isn't filled again."
+                elif job.get("ats") not in SUPPORTED:
+                    msg = "Saved. Appli can't fill this site, so upload the PDF yourself."
+                else:
+                    upd.update(status="queued", status_reason="Resume from your bank approved: filled with it, first in the queue")
+                    msg = "Approved: it's filled with this resume, first in the queue (or press Fill it now)."
+                db.sb().table("jobs").update(upd).eq("id", job_id).execute()
+                return self._json(200, {"ok": True, "next": msg, "queued": upd.get("status") == "queued"})
+            return self._json(404, {"error": "not found"})
+        except bank.BankError as e:
+            return self._json(400, {"error": str(e)})
+        except (TypeError, ValueError) as e:
+            return self._json(400, {"error": f"Bad request: {e}"})
 
     def _resume_build(self, body: dict):
         """Build the tailored PDF from the skills ticked; the paused job goes back to the front of the queue."""

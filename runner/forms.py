@@ -56,6 +56,7 @@ _EXTRACT_JS = r"""
     const t = (el.type || el.tagName).toLowerCase();
     if (['hidden','submit','button','image','reset','search'].includes(t) || el.disabled) return;
     if (el.closest('[aria-hidden="true"]') && t !== 'file') return;
+    if (el.closest('.ashby-application-form-input-yesno')) return;  // the hidden box behind Ashby's Yes / No buttons
     if (t !== 'file' && !shown(el) && el.getAttribute('role') !== 'combobox') return;
     if (el.getAttribute('role') === 'combobox' || el.closest('[class*="select__control"]')) {
       const label = labelOf(el); const id = 'f' + (n++); el.setAttribute('data-appli', id);
@@ -89,15 +90,24 @@ _EXTRACT_JS = r"""
     out.push({id, type: g.type === 'radio' || g.els.length > 1 ? (g.type) : 'consent', label, options: optLabels,
               required: g.els.some(e => isReq(e, label))});
   });
-  // Ashby-style Yes/No button pairs
+  // Ashby-style Yes/No button pairs (Ashby puts a hidden checkbox next to the two buttons)
   document.querySelectorAll('div,fieldset').forEach(c => {
-    const kids = [...c.children];
-    if (kids.length === 2 && kids.every(k => k.tagName === 'BUTTON') &&
-        kids.map(k => txt(k).toLowerCase()).sort().join() === 'no,yes' && !c.hasAttribute('data-appli')) {
-      const id = 'f' + (n++); c.setAttribute('data-appli', id);
-      const label = labelOf(kids[0]) !== txt(kids[0]) ? labelOf(kids[0]) : groupLabel([kids[0]], ['Yes', 'No']);
-      out.push({id, type: 'buttons', label, options: ['Yes', 'No'], required: /\*\s*$/.test(label)});
+    const kids = [...c.children].filter(k => k.tagName === 'BUTTON');
+    if (kids.length !== 2 || kids.map(k => txt(k).toLowerCase()).sort().join() !== 'no,yes' ||
+        [...c.children].some(k => k.tagName !== 'BUTTON' && k.tagName !== 'INPUT') || c.hasAttribute('data-appli')) return;
+    const id = 'f' + (n++); c.setAttribute('data-appli', id);
+    const entry = c.closest('.ashby-application-form-field-entry');
+    const title = entry && entry.querySelector('.ashby-application-form-question-title');
+    let label;
+    if (title && txt(title)) {
+      const desc = entry.querySelector('.ashby-application-form-question-description');
+      label = txt(title) + (desc && txt(desc) ? ' — ' + txt(desc) : '');
+    } else {
+      label = labelOf(kids[0]) !== txt(kids[0]) ? labelOf(kids[0]) : groupLabel([kids[0]], ['Yes', 'No']);
     }
+    const box = c.querySelector('input');
+    const required = /\*\s*$/.test(label) || !!(title && /required/i.test(title.className)) || !!(box && box.required);
+    out.push({id, type: 'buttons', label, options: ['Yes', 'No'], required});
   });
   return out;
 }
@@ -263,7 +273,13 @@ def fill_field(page: Page, f: Field, value: str) -> bool:
         elif f.type == "combobox":
             _click_combobox(page, loc, value, school=bool(_SCHOOL_LABEL.search(f.label)))
         elif f.type == "buttons":
-            loc.locator("button", has_text=re.compile(rf"^\s*{re.escape(value)}\s*$", re.I)).click(timeout=3000)
+            opt = (match_option(value, f.options) or value).strip().lower()
+            btn = loc.locator(f'button[data-option="{opt}"]')
+            if not btn.count():
+                btn = loc.locator("button", has_text=re.compile(rf"^\s*{re.escape(opt)}\s*$", re.I))
+            btn.first.click(timeout=3000)
+            if btn.first.get_attribute("aria-pressed", timeout=2000) == "false":  # the click didn't take
+                return False
         elif f.type == "consent":
             # a single box ("Still a student?", "I currently work here"); real consent questions never get an answer
             # (answering.py leaves them for you), so a value here means "tick it"
@@ -387,3 +403,102 @@ def kind_of_file(f: Field) -> str | None:
     if _RESUME.search(f.label):
         return "resume"
     return None
+
+
+_FIELD_PATH_JS = r"""
+(ids) => Object.fromEntries(ids.map(id => {
+  const el = document.querySelector(`[data-appli="${id}"]`) || document.querySelector(`[data-appli-opt^="${id}o"]`);
+  const box = el && el.closest('[data-field-path]');
+  return [id, box ? box.getAttribute('data-field-path') : null];
+}))
+"""
+
+
+class AshbySaves:
+    """Ashby saves each answer to its server the moment it's typed (one ApiSetFormValue request per change), and Submit
+    only sends what those saves recorded: a page that shows an answer can still get "missing required field". This
+    watches every save so the runner can wait for them all and re-type any answer that wasn't saved."""
+
+    def __init__(self, page: Page):
+        self.page = page
+        self.inflight: set = set()
+        self.results: list = []  # (path, response or None) in the order the saves went out
+        page.on("request", self._sent)
+        page.on("requestfinished", self._finished)
+        page.on("requestfailed", self._finished)
+
+    @staticmethod
+    def _is_save(req) -> bool:
+        return "ApiSetFormValue" in req.url and req.method == "POST"
+
+    def _sent(self, req):
+        if self._is_save(req):
+            self.inflight.add(req)
+
+    def _finished(self, req):
+        if self._is_save(req):
+            self.inflight.discard(req)
+            self.results.append(req)
+
+    def settle(self, timeout_ms: int = 10000) -> None:
+        """Wait until every save has its answer from Ashby."""
+        waited = 0
+        while self.inflight and waited < timeout_ms:
+            self.page.wait_for_timeout(100)
+            waited += 100
+
+    def saved_paths(self) -> dict[str, bool]:
+        """data-field-path -> did its latest save succeed."""
+        out: dict[str, bool] = {}
+        for req in self.results:
+            try:
+                path = (req.post_data_json or {}).get("variables", {}).get("path")
+            except Exception:
+                continue
+            if not path:
+                continue
+            ok = False
+            try:
+                resp = req.response()
+                if resp is not None and resp.ok:
+                    body = resp.json()
+                    ok = not body.get("errors")
+            except Exception:
+                ok = False
+            out[path] = ok
+        return out
+
+    def unsaved(self, fields: list[Field]) -> list[Field]:
+        """The given (answered) fields whose answer Ashby never saved, or whose last save failed."""
+        if not fields:
+            return []
+        self.settle()
+        paths = self.page.evaluate(_FIELD_PATH_JS, [f.id for f in fields])
+        saved = self.saved_paths()
+        return [f for f in fields if paths.get(f.id) and not saved.get(paths[f.id])]
+
+
+def refill(page: Page, f: Field, value: str) -> bool:
+    """Type an answer again so the form notices it: a text box is emptied first (setting the same text again fires no
+    change), a Yes / No pair is pressed the other way first."""
+    loc = page.locator(f'[data-appli="{f.id}"]')
+    try:
+        if f.type in ("text", "textarea", "email", "tel", "url", "number"):
+            loc.fill("", timeout=3000)
+            page.wait_for_timeout(150)
+        elif f.type == "buttons":
+            other = "No" if norm(value) == "yes" else "Yes"
+            fill_field(page, f, other)
+            page.wait_for_timeout(300)
+        elif f.type == "radio" and len(f.options) > 1:  # pressing the chosen option again changes nothing
+            want = match_option(value, f.options) or fuzzy_option(value, f.options)
+            other = next((k for k, o in enumerate(f.options) if o != want), None)
+            if other is not None:
+                page.locator(f'[data-appli-opt="{f.id}o{other}"]').check(timeout=3000, force=True)
+                page.wait_for_timeout(300)
+        elif f.type == "checkbox":
+            page.locator(f'[data-appli-opt^="{f.id}o"]').evaluate_all("els => els.forEach(e => e.checked && e.click())")
+            page.wait_for_timeout(300)
+    except Exception:
+        pass
+    return fill_field(page, f, value)

@@ -42,6 +42,7 @@ const LEVELS = [
 const SOURCES = [
   { key: "boards", label: "Company job boards", hint: "Greenhouse, Lever, Ashby and Workday boards of the companies in your jobs, plus any you add below" },
   { key: "lists", label: "New-grad / intern lists", hint: "SimplifyJobs' community lists on GitHub, updated daily" },
+  { key: "remote", label: "Remote job boards", hint: "Remote OK, We Work Remotely, Remotive, Working Nomads, Jobspresso, Landing.jobs and PowerToFly" },
 ];
 
 function Chips({ values, onChange, placeholder }: { values: string[]; onChange: (v: string[]) => void; placeholder: string }) {
