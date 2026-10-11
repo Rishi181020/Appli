@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { BuildResult, ResumeEdit, resumeLabel, ResumeJob, agent, matchTone, pctText, supabase, tailoredPdfUrl, timeAgo } from "./lib";
 import { Avatar } from "./JobsView";
 import { IconAlert, IconCheck, IconExternal, IconRefresh } from "./Icons";
+import BankCard, { isBank } from "./BankDraft";
 
 const COLS = "id,company,role,ats,status,updated_at,resume_match,resume_edits,resume_review,resume_file";
 const pct = (n: number | null | undefined) => (n == null ? "–" : `${Math.round(n * 100)}%`);
@@ -82,6 +83,20 @@ function Card({ job, onChanged }: { job: ResumeJob; onChanged: () => void }) {
           ? { ok: true, text: "A run is going: if it paused this job for tailoring, it fills it now. Otherwise it's first in the queue for the next run." }
           : { ok: false, text: `${msg} It stays first in the queue.` }
       );
+    }
+    setBusy(false);
+  }
+
+  async function fromBank() {
+    // replaces this skills-only draft with a whole resume written for the job from the experience bank (about a minute)
+    setBusy(true);
+    setFillMsg({ ok: true, text: "Building a resume for this job from your experience bank… this takes about a minute." });
+    try {
+      await agent("/api/bank/build", { job_id: job.id }); // runs in the background; this page refreshes when it's ready
+      setFillMsg({ ok: true, text: "Building a resume for this job from your experience bank: it shows up here in about a minute." });
+      onChanged();
+    } catch (e) {
+      setFillMsg({ ok: false, text: (e as Error).message });
     }
     setBusy(false);
   }
@@ -232,6 +247,11 @@ function Card({ job, onChanged }: { job: ResumeJob; onChanged: () => void }) {
           {busy ? "Building…" : built ? `Rebuild with ${accepted.size} skill(s)` : `Build tailored resume (${accepted.size} skill${accepted.size === 1 ? "" : "s"})`}
         </button>
         {!built && (
+          <button className="btn" onClick={fromBank} disabled={busy} title="Write a whole resume for this job from everything in your experience bank">
+            Build from my experience bank
+          </button>
+        )}
+        {!built && (
           <button className="btn ghost" onClick={dismiss} disabled={busy} title="Fill this job with the best base resume instead">
             Use base resume instead
           </button>
@@ -319,7 +339,7 @@ export default function ResumeReview() {
           <span className="muted">Suggestions appear here after a run, for jobs where your best resume matched under 80%.</span>
         </div>
       ) : (
-        pending.map((j) => <Card key={j.id} job={j} onChanged={load} />)
+        pending.map((j) => (isBank(j) ? <BankCard key={j.id} job={j} onChanged={load} /> : <Card key={j.id} job={j} onChanged={load} />))
       )}
 
       {built.length > 0 && (
@@ -327,7 +347,7 @@ export default function ResumeReview() {
           <button className="btn ghost" onClick={() => setShowBuilt((v) => !v)}>
             {showBuilt ? "Hide" : "Show"} built resumes ({built.length})
           </button>
-          {showBuilt && built.map((j) => <Card key={j.id} job={j} onChanged={load} />)}
+          {showBuilt && built.map((j) => (isBank(j) ? <BankCard key={j.id} job={j} onChanged={load} /> : <Card key={j.id} job={j} onChanged={load} />))}
         </>
       )}
     </div>

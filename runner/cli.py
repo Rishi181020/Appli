@@ -212,6 +212,35 @@ def cmd_find(_args):
     jobsearch.search(lambda s: print(s, flush=True))
 
 
+def cmd_bankbuild(args):
+    """Build a resume for one job from the experience bank (the dashboard starts this in the background)."""
+    import httpx
+
+    from .db import sb
+    from .jobsearch import UA, Found, describe
+    from .resume import bankbuild, select
+
+    _activate()
+    job = sb().table("jobs").select("*").eq("id", args.id).execute().data[0]
+    try:
+        with httpx.Client(timeout=20, follow_redirects=True, headers=UA) as c:
+            desc = describe(Found(job["url"] or "", job["company"], job.get("role") or "", "", job["url"] or "",
+                                  job.get("ats") or "", ""), c)
+        if len(desc) < 300:
+            raise RuntimeError("couldn't read this posting's description to tailor against")
+        job = {**job, "description": desc[:6000]}
+        info = select.evaluate(job) or {"terms": [], "pct": None, "chosen": next(iter(config.RESUMES), None)}
+        r = bankbuild.build_draft(job, info, load_profile(config.PROFILE_PATH, config.PRIMARY_TEX))
+    except Exception as e:  # shown on the job, since nobody is watching this process
+        sb().table("jobs").update({"status_reason": f"Building from your bank failed: {str(e)[:200]}"}).eq("id", args.id).execute()
+        raise
+    upd = {"resume_edits": r, "resume_review": "pending"}
+    if job["status"] in ("queued", "failed", "needs_manual", "ready_for_review"):
+        upd.update(status="tailoring", status_reason="Resume built from your experience bank: review it")
+    sb().table("jobs").update(upd).eq("id", args.id).execute()
+    print(f"Done: {r['pages']} page(s)")
+
+
 def cmd_learn(_args):
     """Seed learned answers from forms already filled (factual option questions only)."""
     from . import known
@@ -341,6 +370,9 @@ def main():
     p_sc.set_defaults(fn=cmd_screen)
     sub.add_parser("find", help="Search for relevant jobs (results appear on the dashboard's Find jobs tab)").set_defaults(
         fn=cmd_find)
+    p_bb = sub.add_parser("bankbuild", help="Build a resume for one job from the experience bank")
+    p_bb.add_argument("--id", type=int, required=True)
+    p_bb.set_defaults(fn=cmd_bankbuild)
     sub.add_parser("learn", help="Seed learned answers from forms already filled").set_defaults(fn=cmd_learn)
     p_rs = sub.add_parser("rescore", help="Recompute match % for existing jobs (no filling, no status change)")
     p_rs.add_argument("--status", default="ready_for_review,queued,tailoring", help="Comma-separated statuses to rescore")

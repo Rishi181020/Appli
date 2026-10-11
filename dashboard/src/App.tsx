@@ -10,7 +10,8 @@ import ProfileView from "./ProfileView";
 import FilesView from "./Files";
 import Onboarding from "./Onboarding";
 import FindJobs from "./FindJobs";
-import { IconBookmark, IconCheck, IconDoc, IconFolder, IconList, IconLogout, IconMoon, IconSearch, IconSun, IconUser, Logo } from "./Icons";
+import BankView from "./BankView";
+import { IconBookmark, IconCheck, IconDoc, IconFolder, IconList, IconLogout, IconMoon, IconSearch, IconSun, IconTarget, IconUser, Logo } from "./Icons";
 import { useTheme } from "./theme";
 
 const initials = (s: string) =>
@@ -21,7 +22,7 @@ const initials = (s: string) =>
     .map((w) => w[0]?.toUpperCase())
     .join("");
 
-type Tab = "jobs" | "find" | "applied" | "resume" | "answers" | "profile" | "files";
+type Tab = "jobs" | "find" | "applied" | "resume" | "bank" | "answers" | "profile" | "files";
 
 export default function App() {
   const [session, setSession] = useState<Session | null | undefined>(undefined);
@@ -170,6 +171,7 @@ export default function App() {
               {nav("applied", <IconCheck />, "Applied", applied !== null ? <span className="count">{applied}</span> : null)}
               <div className="nav-label">Improve</div>
               {nav("resume", <IconDoc />, "Resume review", pendingResumes ? <span className="count warn-count">{pendingResumes}</span> : null)}
+              {nav("bank", <IconTarget />, "Experience bank")}
               {nav("answers", <IconBookmark />, "Saved answers")}
               <div className="nav-label">You</div>
               {nav("profile", <IconUser />, "Profile")}
@@ -222,6 +224,8 @@ export default function App() {
           <AppliedView />
         ) : tab === "resume" ? (
           <ResumeReview />
+        ) : tab === "bank" ? (
+          <BankView />
         ) : (
           <AnswersView />
         )}

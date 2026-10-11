@@ -291,6 +291,37 @@ export type ResumeEdits = {
   problems: ResumeProblem[];
   built?: { pct_after: number | null; added_words: string[]; removed_words: string[]; accepted: string[]; file: string };
 };
+export type BankEntry = {
+  id: string;
+  kind: string;
+  title: string;
+  org: string;
+  location: string;
+  start: string;
+  end: string;
+  link: string;
+  text: string;
+  tags: string[];
+  source: string;
+  updated: string;
+};
+export type BankData = {
+  entries: BankEntry[];
+  files: { name: string; added: string; entries: string[] }[];
+  summary: { entries: number; by_kind: Record<string, number>; files: number };
+};
+export const BANK_KINDS: [string, string][] = [
+  ["experience", "Experience"],
+  ["research", "Research"],
+  ["project", "Projects"],
+  ["publication", "Publications"],
+  ["leadership", "Leadership"],
+  ["award", "Awards"],
+  ["education", "Education"],
+  ["skills", "Skills"],
+  ["narrative", "About me"],
+  ["other", "Other"],
+];
 export type ResumeJob = Pick<Job, "id" | "company" | "role" | "ats" | "status" | "updated_at"> & {
   resume_match: ResumeMatch | null;
   resume_edits: ResumeEdits | null;

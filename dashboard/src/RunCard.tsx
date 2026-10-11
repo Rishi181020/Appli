@@ -42,10 +42,12 @@ type Props = {
   queued: number;
   ready: number;
   submittedToday: number;
+  /** While the list is filtered: the queued jobs it shows that Appli can fill, in the order shown. Run takes the first N. */
+  filteredIds?: number[] | null;
   onChanged: () => void;
 };
 
-export default function RunCard({ status, offline, queued, ready, submittedToday, onChanged }: Props) {
+export default function RunCard({ status, offline, queued, ready, submittedToday, filteredIds, onChanged }: Props) {
   const [limit, setLimit] = useState(getGoal());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -64,7 +66,7 @@ export default function RunCard({ status, offline, queued, ready, submittedToday
       } catch {
         /* storage unavailable: fine */
       }
-      await agent("/api/run", { limit });
+      await agent("/api/run", filteredIds ? { ids: filteredIds.slice(0, limit) } : { limit });
       onChanged();
     } catch (e) {
       setError((e as Error).message);
@@ -95,7 +97,10 @@ export default function RunCard({ status, offline, queued, ready, submittedToday
   })();
 
   let title = "Ready when you are";
-  let sub = `${queued} in the queue${ready ? ` · ${ready} waiting for your review` : ""}`;
+  const available = filteredIds ? filteredIds.length : queued;
+  let sub = filteredIds
+    ? `${filteredIds.length} queued job${filteredIds.length === 1 ? "" : "s"} match your filters: Run takes the top ${Math.min(limit, filteredIds.length)} as listed`
+    : `${queued} in the queue${ready ? ` · ${ready} waiting for your review` : ""}`;
   if (offline) {
     title = "Agent not connected";
     sub = "Open the app with start.bat so the Run button can control your browser.";
@@ -144,8 +149,8 @@ export default function RunCard({ status, offline, queued, ready, submittedToday
               <span>Applications</span>
               <input type="number" min={1} max={100} value={limit} onChange={(e) => setLimit(Math.max(1, Number(e.target.value) || 1))} />
             </label>
-            <button className="btn primary big" disabled={busy || offline || queued === 0} onClick={run}>
-              <IconPlay /> Run {limit}
+            <button className="btn primary big" disabled={busy || offline || available === 0} onClick={run}>
+              <IconPlay /> Run {filteredIds ? `${Math.min(limit, filteredIds.length)} filtered` : limit}
             </button>
           </>
         ) : (

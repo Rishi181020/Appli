@@ -133,6 +133,20 @@ class as_user:
         _local.client = _local.user_id = None
 
 
+def job_payload(rows: list[JobRow], owner_id: str) -> list[dict]:
+    """Rows to insert. Every row carries the same keys: a bulk insert sends NULL (not the column default) for a key
+    that only some rows have, which broke on status."""
+    payload = []
+    for r in rows:
+        d = {**asdict(r), "owner_id": owner_id, "status": "queued", "status_reason": None}
+        if not r.url:
+            d["status"], d["status_reason"] = "needs_manual", "No apply link"
+        elif r.ats not in SUPPORTED:
+            d["status"], d["status_reason"] = "needs_manual", f"{r.ats} applications aren't automated yet"
+        payload.append(d)
+    return payload
+
+
 def import_jobs(rows: list[JobRow]) -> dict:
     """Insert new jobs only; existing rows keep their status. A posting already present under another link
     spelling (or listed twice) is not inserted again."""
@@ -149,14 +163,7 @@ def import_jobs(rows: list[JobRow]) -> dict:
         if c:
             seen_canon.add(c)
         new.append(r)
-    payload = []
-    for r in new:
-        d = {**asdict(r), "owner_id": user_id()}
-        if not r.url:
-            d["status"], d["status_reason"] = "needs_manual", "No apply link"
-        elif r.ats not in SUPPORTED:
-            d["status"], d["status_reason"] = "needs_manual", f"{r.ats} applications aren't automated yet"
-        payload.append(d)
+    payload = job_payload(new, user_id())
     for i in range(0, len(payload), 200):
         sb().table("jobs").insert(payload[i : i + 200]).execute()
     return {"inserted": len(new), "already_present": len(rows) - len(new)}
@@ -215,7 +222,8 @@ def dedupe_jobs() -> int:
     for r in all_jobs("id,ats,url,status"):
         if r["ats"] in SUPPORTED:
             groups.setdefault(canonical(r["ats"], r["url"]), []).append(r)
-    rank = {"submitted": 0, "ready_for_review": 1, "filling": 1, "queued": 2, "failed": 3, "needs_manual": 3, "skipped": 4}
+    rank = {"submitted": 0, "ready_for_review": 1, "filling": 1, "tailoring": 1, "needs_help": 1, "submission_required": 1,
+            "queued": 2, "failed": 3, "needs_manual": 3, "skipped": 4}
     n = 0
     for g in groups.values():
         if len(g) < 2:

@@ -3,9 +3,9 @@ from runner import answering, config, llm
 from runner.answering import Field
 from runner.profile import load_profile
 
-from runner.db import user_id
+from runner import db
 
-config.activate(user_id())  # the files of whoever last signed in on this computer
+config.activate(db._owner())  # the files of whoever last signed in here (no network needed)
 profile = load_profile(config.PROFILE_PATH, config.PRIMARY_TEX)
 calls = {"json": [], "text": []}
 

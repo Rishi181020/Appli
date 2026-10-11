@@ -14,6 +14,8 @@ import {
   timeAgo,
 } from "./lib";
 import RunCard, { getGoal } from "./RunCard";
+
+const FILLABLE_ATS = new Set(["greenhouse", "ashby", "lever", "workable", "workday"]); // runner/ats SUPPORTED
 import Drawer from "./Drawer";
 import AddJobs from "./AddJobs";
 import PreScreen from "./PreScreen";
@@ -235,6 +237,12 @@ export default function JobsView({ onOpenApplied }: { onOpenApplied: () => void 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobs, statuses, tiers, sites, q, matches, sort]);
 
+  // Run with filters on: the queued jobs on screen that Appli can fill, top first
+  const filteredIds = useMemo(
+    () => (filtering ? rows.filter((j) => j.status === "queued" && FILLABLE_ATS.has(j.ats ?? "")).map((j) => j.id) : null),
+    [filtering, rows]
+  );
+
   const patch = (id: number, p: Partial<Job>) => setJobs((js) => js.map((j) => (j.id === id ? { ...j, ...p } : j)));
 
   if (loading) {
@@ -282,6 +290,7 @@ export default function JobsView({ onOpenApplied }: { onOpenApplied: () => void 
         queued={counts.queued ?? 0}
         ready={counts.ready_for_review ?? 0}
         submittedToday={submittedToday}
+        filteredIds={filteredIds}
         onChanged={() => {
           poll();
           load();
