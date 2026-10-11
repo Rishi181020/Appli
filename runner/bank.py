@@ -60,6 +60,8 @@ def _clean_entry(e: dict, source: str) -> dict:
         "link": str(e.get("link") or "").strip()[:300],
         "text": str(e.get("text") or "").strip()[:12000],
         "tags": [str(t).strip() for t in (e.get("tags") or []) if str(t).strip()][:30],
+        # bullets the person wrote and approved: used word for word on every resume, most important first
+        "pinned": [str(b).strip() for b in (e.get("pinned") or []) if str(b).strip()][:8],
         "source": e.get("source") or source,
         "updated": time.strftime("%Y-%m-%d %H:%M"),
     }
@@ -67,7 +69,10 @@ def _clean_entry(e: dict, source: str) -> dict:
 
 def upsert_entry(e: dict) -> dict:
     d = load()
+    keep_pins = "pinned" not in e  # an editor that doesn't know about pinned bullets mustn't wipe them
     e = _clean_entry(e, e.get("source") or "typed")
+    if keep_pins:
+        e["pinned"] = next((x.get("pinned", []) for x in d["entries"] if x["id"] == e["id"]), [])
     if not (e["title"] or e["text"]):
         raise BankError("An entry needs a title or some text")
     for i, x in enumerate(d["entries"]):

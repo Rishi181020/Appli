@@ -302,6 +302,19 @@ def _found(evidence: str, text: str) -> bool:
     return m.size >= 0.85 * len(ev)
 
 
+def pin(draft: dict, plan_: dict, by_id: dict) -> dict:
+    """Entries with bullets the person wrote and approved use them word for word: as many as the plan gives the entry,
+    the rest as spares for the page fill. They are the person's own words, so the checks below pass them as edited."""
+    wanted = {x["id"]: x["bullets"] for s in plan_["sections"] for x in s["entries"]}
+    entries = draft.setdefault("entries", {})
+    for eid, e in by_id.items():
+        if e.get("pinned"):
+            mine = [{"text": t, "evidence": "", "terms": [], "edited": True} for t in e["pinned"]]
+            n = wanted.get(eid, len(mine))
+            entries[eid] = {"bullets": mine[:n], "spare": mine[n:]}
+    return draft
+
+
 def verify(draft: dict, by_id: dict) -> tuple[dict, list[dict]]:
     """Keep only bullets whose quote is really in their entry and whose numbers come from that entry."""
     dropped = []
@@ -697,18 +710,19 @@ def build_draft(job: dict, info: dict, profile, base_key: str | None = None, log
     p = plan(job, info, entries, profile, own_headings(base_src), template)
     p["base_skills"] = base_skill_lines(base_key)
     log(f"    bank resume: {p['pages']} page(s), sections {', '.join(s['heading'] for s in p['sections'])}")
-    draft = write(job, info, p, by_id, sk_src)
+    draft = pin(write(job, info, p, by_id, sk_src), p, by_id)
     reviews = []
     for round_ in (1, 2, 3):  # up to two revisions; the last review is of the final draft, for Resume review
         checked, dropped = verify(draft, by_id)
         r = critique(job, info, p, checked, by_id, sk_src)
+        r["issues"] = [i for i in r["issues"] if not by_id.get(i.get("entry"), {}).get("pinned")]  # your own words
         serious = [i for i in r["issues"] if i.get("severity") in ("high", "medium")]
         reviews.append({"round": round_, "verdict": r["verdict"], "score": r["score"], "model": r["model"], "issues": r["issues"],
                         "dropped_before_review": dropped})
         log(f"    adversarial review {round_}: score {r['score']}, {len(serious)} serious issue(s)")
         if not serious or round_ == 3:
             break
-        draft = write(job, info, p, by_id, sk_src, r, checked)
+        draft = pin(write(job, info, p, by_id, sk_src, r, checked), p, by_id)
     final, dropped = verify(draft, by_id)
     shown = " ".join(b["text"] for s in p["sections"] for x in s["entries"]
                      for b in (final["entries"].get(x["id"]) or {}).get("bullets", []))
