@@ -8,7 +8,7 @@ Sources (all public, no scraping, no account):
     Landing.jobs, PowerToFly); each listing is followed to the company's own application form when it has one.
 Pipeline: fetch -> filter by the person's search preferences (titles, level, location, age, excluded words) and drop
 anything already in their jobs -> rank -> for the top N: read the posting, run the same sponsorship / citizenship /
-clearance screen as a run (patterns + Jev), and score it against their resumes (match %).
+clearance screen patterns as a run (no Jev), and score it against their resumes (match %).
 Results go to users/<Name>/found.json; the dashboard's Find jobs tab shows them and the person ticks what to add.
 """
 import html
@@ -554,7 +554,7 @@ def describe(f: Found, c: httpx.Client) -> str:
 
 def score(items: list[Found], active: frozenset[str], log) -> None:
     from .resume import select
-    from .screening import jev_screen, screen
+    from .screening import screen
 
     def one(f: Found):
         with httpx.Client(timeout=15, follow_redirects=True, headers=UA) as c:
@@ -563,17 +563,12 @@ def score(items: list[Found], active: frozenset[str], log) -> None:
         text = f.description
         if len(text) < 300:
             return f  # nothing to read: shown without a match %
-        reason = screen(text, active)
-        if not reason:
-            try:
-                reason = jev_screen(text, None, active)
-            except Exception:
-                pass
+        reason = screen(text, active)  # patterns only: no Jev while searching
         if reason:
             f.screened = reason
             return f
         try:
-            info = select.evaluate({"company": f.company, "role": f.title, "description": text, "id": None})
+            info = select.evaluate({"company": f.company, "role": f.title, "description": text, "id": None}, use_jev=False)
         except Exception:
             info = None
         if info:

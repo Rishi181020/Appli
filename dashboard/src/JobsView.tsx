@@ -355,7 +355,7 @@ export default function JobsView({ onOpenApplied }: { onOpenApplied: () => void 
       </section>
 
       <div className="list">
-        {rows.slice(0, 300).map((j) => (
+        {rows.map((j) => (
           <PickRow key={j.id} j={j} order={picked.indexOf(j.id) + 1} onToggle={() => togglePick(j.id)}>
             <JobItem j={j} selected={openId === j.id} onClick={() => setOpenId(j.id)} />
           </PickRow>
@@ -370,9 +370,7 @@ export default function JobsView({ onOpenApplied }: { onOpenApplied: () => void 
                 : "No applications match these filters."}
             </span>
           </div>
-        )}
-        {rows.length > 300 && <div className="muted small more">Showing the first 300 of {rows.length}. Narrow with filters.</div>}
-      </div>
+        )}      </div>
 
       {picked.length > 0 && (
         <div className="pickbar" role="region" aria-label="Manual queue">

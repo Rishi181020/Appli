@@ -94,7 +94,7 @@ _EXTRACT_JS = r"""
   document.querySelectorAll('div,fieldset').forEach(c => {
     const kids = [...c.children].filter(k => k.tagName === 'BUTTON');
     if (kids.length !== 2 || kids.map(k => txt(k).toLowerCase()).sort().join() !== 'no,yes' ||
-        [...c.children].some(k => k.tagName !== 'BUTTON' && k.tagName !== 'INPUT') || c.hasAttribute('data-appli')) return;
+        [...c.children].some(k => k.tagName !== 'BUTTON' && k.tagName !== 'INPUT')) return;  // re-tagged on every extract, like the rest
     const id = 'f' + (n++); c.setAttribute('data-appli', id);
     const entry = c.closest('.ashby-application-form-field-entry');
     const title = entry && entry.querySelector('.ashby-application-form-question-title');

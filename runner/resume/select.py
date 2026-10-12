@@ -139,8 +139,9 @@ def choose(job: dict, terms: list[dict], scores: dict[str, dict]) -> tuple[str, 
     return best, "score", conf
 
 
-def evaluate(job: dict) -> dict | None:
-    """Match info for a job, or None when there is no usable posting text / no resume source."""
+def evaluate(job: dict, use_jev: bool = True) -> dict | None:
+    """Match info for a job, or None when there is no usable posting text / no resume source.
+    use_jev=False: exact keyword coverage only (no equivalents check, best coverage picks the resume)."""
     desc = job.get("description") or ""
     docs = base_docs()
     if len(desc) < 300 or not docs:
@@ -148,9 +149,9 @@ def evaluate(job: dict) -> dict | None:
     terms = match.extract_terms(desc, job.get("role"), job.get("company"))
     if len(terms) < 4:
         return None
-    equiv = jev_equivalents(docs, terms, job.get("id"))
+    equiv = jev_equivalents(docs, terms, job.get("id")) if use_jev else {k: set() for k in docs}
     scores = {k: match.score(d["text"], terms, equiv[k], d["skills_text"], d["bullets_text"]) for k, d in docs.items()}
-    chosen, by, conf = choose(job, terms, scores)
+    chosen, by, conf = choose(job, terms, scores) if use_jev else (max(scores, key=lambda k: scores[k]["pct"]), "score", 0.0)
     s = scores[chosen]
     return {
         "terms": terms,
