@@ -257,7 +257,7 @@ export default function FindJobs() {
             <label className="pf-field">
               <span>Screen and score the top</span>
               <input type="number" min={5} max={150} value={prefs.score_top} onChange={(e) => set({ score_top: Number(e.target.value) })} />
-              <small className="muted">Each costs a fraction of a cent (Jev + the fast model).</small>
+              <small className="muted">Each costs a fraction of a cent (the fast model).</small>
             </label>
           </div>
         </section>
