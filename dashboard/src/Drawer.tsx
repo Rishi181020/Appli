@@ -184,7 +184,7 @@ export default function Drawer({ id, onClose, onChanged }: Props) {
                 {job.resume_review === "built" && job.resume_file && (
                   <p className="small" style={{ marginTop: 6 }}>
                     Tailored resume saved: <code>{job.resume_file}</code>{" "}
-                    <a href={tailoredPdfUrl(job.id)} target="_blank" rel="noreferrer">Open PDF</a>
+                    <a href={tailoredPdfUrl(job.id)} target="_blank" rel="noreferrer">{job.resume_file.endsWith(".docx") ? "Download Word file" : "Open PDF"}</a>
                   </p>
                 )}
               </section>

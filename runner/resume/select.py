@@ -15,10 +15,10 @@ def resume_version() -> str:
 
     h = hashlib.sha1()
     for key in sorted(config.RESUMES):
-        tex_path = config.RESUME_TEX.get(key)
+        src_path = config.RESUME_TEX.get(key) or config.RESUME_DOCX.get(key)
         pdf = config.RESUMES[key]
         try:
-            h.update(key.encode() + (tex_path.read_bytes() if tex_path else b"") + (pdf.read_bytes() if pdf.exists() else b""))
+            h.update(key.encode() + (src_path.read_bytes() if src_path else b"") + (pdf.read_bytes() if pdf.exists() else b""))
         except OSError:
             continue
     return h.hexdigest()[:12]
@@ -51,6 +51,16 @@ def base_docs() -> dict[str, dict]:
                 continue
             except (OSError, ValueError) as e:
                 print(f"    {key}: LaTeX unreadable ({e}); using the PDF text instead")
+        docx_path = config.RESUME_DOCX.get(key)
+        if docx_path:
+            from . import word
+
+            try:
+                w = word.parse(docx_path)
+                docs[key] = {"src": "", "format": "docx", "tailorable": bool(w["units"]), **w}
+                continue
+            except Exception as e:  # a damaged or unusual .docx: score the PDF instead
+                print(f"    {key}: Word file unreadable ({type(e).__name__}); using the PDF text instead")
         try:
             from ..cover_letter import resume_text
 
@@ -171,4 +181,5 @@ def evaluate(job: dict, use_jev: bool = True) -> dict | None:
         # per-person resume names, so the dashboard shows "SWE" / "Data Eng" etc. instead of internal keys
         "labels": {k: config.RESUME_LABELS.get(k, k) for k in scores},
         "tailorable": bool(docs[chosen].get("tailorable")),
+        "format": docs[chosen].get("format", "tex"),
     }

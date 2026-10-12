@@ -13,6 +13,12 @@ from .style import STYLE, clean
 
 @lru_cache(maxsize=8)
 def resume_text(path: str) -> str:
+    if str(path).lower().endswith(".docx"):  # a tailored Word resume
+        from pathlib import Path
+
+        from .bank import text_of
+
+        return text_of(Path(path))
     return "\n".join((p.extract_text() or "") for p in PdfReader(path).pages)
 
 

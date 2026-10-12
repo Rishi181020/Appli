@@ -323,8 +323,8 @@ def bank_ready() -> bool:
 def _draft_tailoring(jid: int, job: dict, info: dict, profile: Profile):
     """Background: draft the tailored resume, then hand the job to Resume review (or back to the queue).
     With an experience bank, a whole resume is built for the job (planned, written, reviewed by a second model);
-    without one, missing skills are added to the best base resume."""
-    if bank_ready():
+    without one (or without LaTeX), missing skills are added to the best base resume."""
+    if info.get("use_bank"):
         from .resume import bankbuild
 
         try:
@@ -360,13 +360,15 @@ def _draft_tailoring(jid: int, job: dict, info: dict, profile: Profile):
 
 
 def _has_latex() -> bool:
-    """Every tailored resume is compiled with pdflatex: without it, drafting one only wastes model calls."""
+    """LaTeX resumes are compiled with pdflatex (TinyTeX is installed the first time): without it, drafting one only
+    wastes model calls. Word resumes don't need it."""
     from .resume import tex
 
     try:
         tex.pdflatex_path()
         return True
-    except RuntimeError:
+    except RuntimeError as e:
+        print(f"    {e}")
         return False
 
 
@@ -400,20 +402,20 @@ def _choose_resume(job: dict, profile: Profile) -> tuple[str, Path, dict | None,
             why = "not tailoring: you chose the base resume (or no safe edits were found) for these resumes"
         elif not SCHEMA["tailoring"]:
             why = "not tailoring: run supabase/migrations/002 and 003"
-        elif not _has_latex():
-            why = "not tailoring: LaTeX isn't installed on this computer (install MiKTeX from miktex.org, then restart Appli)"
-        elif bank_ready():
+        elif bank_ready() and (info.get("format") == "docx" or _has_latex()):  # Word: their file; LaTeX: TinyTeX at first
             action = "tailor"  # a resume built for this job from the experience bank
-            info["addable"] = []
+            info["addable"], info["use_bank"] = [], True
         elif not info.get("tailorable", True):
-            why = f"not tailoring: the {info['labels'].get(key, key) if info.get('labels') else key} resume has no LaTeX source"
+            why = f"not tailoring: the {info['labels'].get(key, key) if info.get('labels') else key} resume has no Word or LaTeX source"
+        elif info.get("format") != "docx" and not _has_latex():
+            why = "not tailoring: LaTeX couldn't be installed on this computer (install MiKTeX from miktex.org, or add a Word source)"
         else:
             info["addable"] = tailor.addable_terms(info, profile.text)
             action = "tailor" if info["addable"] else "fill"
             if not info["addable"]:
                 why = "not tailoring: none of the missing skills are backed by your profile or resumes"
     print(f"    resume: {key} ({info['pct']:.0%} match, chosen by {by}; {scores})"
-          + ((" -> building a resume for this job from your experience bank" if bank_ready() else
+          + ((" -> building a resume for this job from your experience bank" if info.get("use_bank") else
               f" -> tailoring ({len(info['addable'])} missing skill(s) to add)") if action == "tailor" else "")
           + (f"\n    {why}" if why else ""))
     return key, config.RESUMES[key], info, action

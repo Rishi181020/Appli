@@ -189,7 +189,7 @@ export async function connectRunner(email: string, password: string) {
 }
 
 /** What this computer has for the signed-in person (from the local server). */
-export type ResumeFile = { key: string; label: string; pdf: string; pdf_ok: boolean; tex: boolean; focus: string };
+export type ResumeFile = { key: string; label: string; pdf: string; pdf_ok: boolean; tex: boolean; source?: "tex" | "docx" | null; focus: string };
 export type Me = {
   email: string;
   folder: string | null;

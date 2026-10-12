@@ -5,3 +5,4 @@ playwright
 python-dotenv
 pypdf
 httpx
+python-docx

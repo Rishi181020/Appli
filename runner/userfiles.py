@@ -42,7 +42,8 @@ def status(owner_id: str) -> dict:
         "folder": cfg.folder.relative_to(ROOT).as_posix(),
         "name": cfg.name,
         "resumes": [{"key": r.key, "label": r.label, "pdf": r.pdf.name, "pdf_ok": r.pdf.exists(),
-                     "tex": bool(r.tex and r.tex.exists()), "focus": r.focus} for r in cfg.resumes],
+                     "tex": bool(r.tex and r.tex.exists()),
+                     "source": r.tex.suffix[1:] if r.tex and r.tex.exists() else None, "focus": r.focus} for r in cfg.resumes],
         "cover_letter": cfg.cover_letter.name if cfg.cover_letter and cfg.cover_letter.exists() else None,
         "profile_md": cfg.profile_path.exists(),
         "workday": workday_status(cfg),
@@ -193,20 +194,38 @@ def _key(label: str, taken: set[str]) -> str:
     return key
 
 
+def _is_docx(blob: bytes) -> bool:
+    """A Word .docx (a zip with word/document.xml). Another zip -> FileError."""
+    if not blob.startswith(b"PK"):
+        return False
+    try:
+        with zipfile.ZipFile(io.BytesIO(blob)) as z:
+            z.getinfo("word/document.xml")
+        return True
+    except (zipfile.BadZipFile, KeyError):
+        raise FileError("That isn't a Word .docx file (an old .doc? Save it as .docx in Word first)")
+
+
 def save_resume(owner_id: str, label: str, pdf: bytes | None, tex: bytes | None = None, focus: str | None = None,
                 key: str | None = None) -> ResumeCfg:
-    """Add a resume, or replace/update one (same key). The PDF is what gets uploaded; main.tex enables tailoring."""
+    """Add a resume, or replace/update one (same key). `pdf` is the file that gets uploaded: a PDF, or a Word .docx (which
+    is then its own editable source too). Its editable source (main.tex or main.docx, passed as `tex`) enables tailoring."""
     cfg = _need(owner_id)
     label = _safe(label) or "General"
     existing = next((r for r in cfg.resumes if r.key == key), None) if key else None
     if existing is None and not pdf:
-        raise FileError("Add the resume PDF")
-    for blob, what in ((pdf, "PDF"), (tex, ".tex")):
+        raise FileError("Add the resume (PDF or Word .docx)")
+    for blob, what in ((pdf, "resume file"), (tex, "source file")):
         if blob and len(blob) > MAX_UPLOAD:
             raise FileError(f"The {what} is over 10 MB")
-    if pdf and not pdf.startswith(b"%PDF"):
-        raise FileError("That file isn't a PDF")
-    if tex and b"\\begin{document}" not in tex:
+    upload_ext = ".pdf"
+    if pdf and _is_docx(pdf):
+        upload_ext = ".docx"
+        tex = tex or pdf  # a Word resume can be tailored as it is
+    elif pdf and not pdf.startswith(b"%PDF"):
+        raise FileError("That file isn't a PDF or a Word .docx (an old .doc? Save it as .docx in Word first)")
+    is_docx = bool(tex) and _is_docx(tex)
+    if tex and not is_docx and b"\\begin{document}" not in tex:
         raise FileError("That .tex file has no \\begin{document}: upload the resume's main LaTeX file")
 
     stem = f"{first_name(cfg)} Resume {label}"
@@ -222,14 +241,16 @@ def save_resume(owner_id: str, label: str, pdf: bytes | None, tex: bytes | None 
     r = existing or ResumeCfg(_key(label, {x.key for x in cfg.resumes}), label, folder / f"{stem}.pdf")
     r.label = label
     if pdf:
-        for old in folder.glob("*.pdf"):
+        for old in [*folder.glob("*.pdf"), *folder.glob("* Resume *.docx")]:  # the old upload file (not main.docx)
             old.unlink()
-        r.pdf = folder / f"{stem}.pdf"
+        r.pdf = folder / f"{stem}{upload_ext}"
         r.pdf.write_bytes(pdf)
-    elif existing and r.pdf.name != f"{stem}.pdf" and r.pdf.exists():
-        r.pdf = r.pdf.rename(folder / f"{stem}.pdf")
+    elif existing and r.pdf.name != f"{stem}{r.pdf.suffix}" and r.pdf.exists():
+        r.pdf = r.pdf.rename(folder / f"{stem}{r.pdf.suffix}")
     if tex:
-        r.tex = folder / "main.tex"
+        if r.tex:  # one source per resume: a .docx replaces a .tex and the other way round
+            r.tex.unlink(missing_ok=True)
+        r.tex = folder / ("main.docx" if is_docx else "main.tex")
         r.tex.write_bytes(tex)
     if focus is not None:
         r.focus = focus.strip()

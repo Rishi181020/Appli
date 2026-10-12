@@ -63,7 +63,7 @@
 
 ## Get started
 
-You need Python 3.11+, Node 18+ and your own [OpenRouter](https://openrouter.ai/keys) key with a little credit.
+You need Python 3.11+, Node 18+ and your own [OpenRouter](https://openrouter.ai/keys) key with a little credit. Nothing else: LaTeX (for tailored LaTeX resumes) is downloaded by itself the first time it's needed (TinyTeX, ~70 MB, no admin rights), unless you already have MiKTeX or TeX Live.
 
 1. Clone the repo, then double-click **`start.bat`** (Windows) or run **`./start.sh`** (Mac/Linux). The first time it installs everything (a few minutes). There's nothing to fill in: the shared database connection comes from `shared.env`.
 2. At http://localhost:8765, **Create account** (email + password), open the confirmation link you're emailed, and sign in.
@@ -77,7 +77,7 @@ Each person's files live in `users/<Full Name>/` (git-ignored), in this layout:
 users/Rishi Rugweda Dixit/
   appli.json                      what's in the folder (written by the app)
   profile.md                      the profile every model call reads (synced from the Profile tab)
-  Rishi Resume SWE/               Rishi Resume SWE.pdf + main.tex (LaTeX = tailoring)
+  Rishi Resume SWE/               Rishi Resume SWE.pdf + main.tex or main.docx (the source = tailoring)
   Rishi Resume AI Eng/ ...
   Cover letter/                   your own letter: the voice for generated ones
   tailored/<job id>/              tailored resumes
@@ -142,17 +142,17 @@ For development: `cd dashboard && npm run dev` (proxies the Run button to the se
 <details>
 <summary><b>Resume matching and tailoring</b></summary>
 
-Each resume lives in its own folder in `users/<Name>/` with its LaTeX source (`Rishi Resume SWE/main.tex` + the PDF). PDF-only resumes get match % but no tailoring.
+Each resume lives in its own folder in `users/<Name>/`: the PDF that gets uploaded, plus its source, either LaTeX (`main.tex`) or Word (`main.docx`). PDF-only resumes get match % but no tailoring: a PDF is a printed page with no lines or sections to edit, so a tailored copy is always made from the source and the PDF rebuilt (LaTeX) or the `.docx` uploaded as is (Word).
 
 - **Every job:** the posting's requirements (languages, tools, concepts) are extracted, and every resume is scored on how many it covers (required terms count double). The best one is uploaded, and the scores are shown on the job.
 - **Below 80%:** the form is still filled with the best resume, and a tailored version is drafted for **Resume review**. Each change is one tickable item with before/after, the exact words added and removed, and the sentence in your own materials that proves it. Terms you don't have anywhere are listed as **gaps** and never added; rejected edits and the reason are shown under **What went wrong**.
-- **Build (= approve):** the job goes back to the front of the queue (even if it was already filled with the base resume, unless you submitted it) and is filled again with the tailored PDF; **Fill it now** starts that right away. The PDF is compiled from your LaTeX with only the ticked changes and saved in `users/<Name>/tailored/<job id>/` (with the `.tex` and a `.changes.md` log). Any later fill of that job uses the tailored PDF.
+- **Build (= approve):** the job goes back to the front of the queue (even if it was already filled with the base resume, unless you submitted it) and is filled again with the tailored PDF; **Fill it now** starts that right away. The PDF is compiled from your LaTeX with only the ticked changes and saved in `users/<Name>/tailored/<job id>/` (with the `.tex` and a `.changes.md` log). Any later fill of that job uses the tailored PDF. A Word resume gets the same skills added to its Skills lines in the `.docx`, which is uploaded instead of a PDF (no LaTeX needed); open it in Word to check it still fits the page.
 - **With an experience bank** (2+ roles, projects or papers in it), a low match builds a whole new resume for the job instead of adding skills to the base one:
   1. **Plan:** a model reads the posting and the bank and picks 1 or 2 pages, the section order and headings, and which entries go in (with how many bullets each).
   2. **Write:** every bullet comes with a word-for-word quote from the bank entry it's based on. Only skills that appear in the bank or profile go in the Skills lines.
   3. **Adversarial review:** a second, different model (`LLM_MODEL_CRITIC`, default the fast model) acts as a skeptical hiring manager and fact-checker: unsupported or inflated claims, changed numbers, AI-sounding wording, a weak layout. The writer revises, up to twice, and the last review is of the final draft.
   4. **Code checks:** a bullet is dropped if its quote isn't really in the entry or it has a number the entry doesn't. Skills not in the bank are removed.
-  5. **Render:** your own LaTeX template, header and education; the least relevant bullets are trimmed until it fits the pages, and spare bullets fill a short page.
+  5. **Render:** your own LaTeX template, header and education; the least relevant bullets are trimmed until it fits the pages, and spare bullets fill a short page. For a Word resume it's your own `.docx`: the header, Education, headings, fonts and spacing stay exactly as they are, and the Experience / Projects entries are swapped for the picked ones, each laid out like your first entry in that section. Word lays out pages itself, so length is estimated from your own resume (it stays about as long as yours): open it in Word to check.
   - In **Resume review** you see the PDF, the layout and why, every bullet with its source quote, the reviewer's remaining points and anything left out. Edit or remove bullets and skills, **Rebuild PDF**, then **Approve**: the job goes to the front of the queue with that PDF. A job with a skills-only draft has **Build from my experience bank**.
   - Fill the bank on **Experience bank**: **Import my resumes, profile and cover letter**, then upload anything else (PDF, Word, LaTeX, text, Markdown) or type entries. Text is copied word for word, not summarized.
 - **One-time:** run `supabase/migrations/002_resume_tailoring.sql` in the Supabase SQL editor.

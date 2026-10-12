@@ -37,12 +37,16 @@ _HEADING_TYPES = [("education", r"educat"), ("publications", r"publicat|papers")
                   ("skills", r"skill")]
 
 
-def own_headings(base_src: str | None) -> dict[str, str]:
+def _titles(base_src: str | None) -> list[str]:
+    """Section titles of a LaTeX resume, in order."""
+    return [re.sub(r"\\([&%$#_])", r"\1", raw).strip() for raw in re.findall(r"\\section\*?\{([^}]*)\}", base_src or "")]
+
+
+def own_headings(base_src: str | None, titles: list[str] | None = None) -> dict[str, str]:
     """Section titles from the person's own resume, by type, e.g. {"projects": "Projects & Awards"}: a resume built
-    from the bank keeps their wording instead of whatever the planner calls a section."""
+    from the bank keeps their wording instead of whatever the planner calls a section. `titles`: a Word resume's."""
     out: dict[str, str] = {}
-    for raw in re.findall(r"\\section\*?\{([^}]*)\}", base_src or ""):
-        title = re.sub(r"\\([&%$#_])", r"\1", raw).strip()
+    for title in _titles(base_src) if titles is None else titles:
         for t, pat in _HEADING_TYPES:
             if re.search(pat, title, re.I):
                 out.setdefault(t, title)
@@ -102,11 +106,10 @@ def _end_key(e: dict) -> tuple[int, int]:
     return (int(y.group(0)), _MONTHS.get(end[:3], 0)) if y else (0, 0)
 
 
-def template_sections(base_src: str | None) -> list[str]:
+def template_sections(base_src: str | None, titles: list[str] | None = None) -> list[str]:
     """Section types of the person's own resume, in their order (e.g. education, experience, projects, skills)."""
     out: list[str] = []
-    for raw in re.findall(r"\\section\*?\{([^}]*)\}", base_src or ""):
-        title = re.sub(r"\\([&%$#_])", r"\1", raw).strip()
+    for title in _titles(base_src) if titles is None else titles:
         for t, pat in _HEADING_TYPES:
             if re.search(pat, title, re.I):
                 if t not in out:
@@ -562,14 +565,27 @@ def render(plan_: dict, draft: dict, by_id: dict, profile, base_src: str | None)
 MIN_BULLETS = 2  # trimming to fit never takes an entry below this; past that the resume goes to 2 pages
 
 
-def fit(plan_: dict, draft: dict, by_id: dict, profile, base_src: str | None) -> tuple[str, "tex.Compiled", list[dict]]:
+def tex_maker(profile, base_src: str | None):
+    """make(plan, draft, by_id) -> (LaTeX source, compiled PDF): what fit / fill lay out with. word.bank_maker is the
+    Word counterpart (the person's own .docx, page length estimated)."""
+    def make(plan_: dict, draft: dict, by_id: dict):
+        src = render(plan_, draft, by_id, profile, base_src)
+        return src, tex.compile_tex(src)
+    return make
+
+
+def fill_of(comp) -> float:
+    """How full the last page is: measured from the PDF, or estimated for a Word resume."""
+    return comp.fill if getattr(comp, "fill", None) is not None else fill_ratio(comp.pdf)
+
+
+def fit(plan_: dict, draft: dict, by_id: dict, make) -> tuple[str, "tex.Compiled", list[dict]]:
     """Compile; while it's longer than the planned pages, drop the last bullet of the least relevant entry that still
     has more than MIN_BULLETS. When nothing more can go, a 1-page plan becomes 2 pages (Education and Skills are never
     dropped to make room)."""
     trimmed = []
     for _ in range(40):
-        src = render(plan_, draft, by_id, profile, base_src)
-        comp = tex.compile_tex(src)
+        src, comp = make(plan_, draft, by_id)
         if not comp.ok or comp.pages <= plan_["pages"]:
             return src, comp, trimmed
         # least relevant first: sections and the entries in them are in priority order, so walk from the end
@@ -618,30 +634,29 @@ def fill_ratio(pdf: bytes) -> float:
 FULL = 0.9
 
 
-def _try(plan_, draft, by_id, profile, base_src):
-    src = render(plan_, draft, by_id, profile, base_src)
-    comp = tex.compile_tex(src)
+def _try(plan_, draft, by_id, make):
+    src, comp = make(plan_, draft, by_id)
     return src, comp, comp.ok and comp.pages <= plan_["pages"]
 
 
-def fit_and_fill(plan_: dict, draft: dict, by_id: dict, profile, base_src: str | None):
+def fit_and_fill(plan_: dict, draft: dict, by_id: dict, make):
     """Trim to the planned pages, then fill the last page while it has room: spare bullets of the entries on it first
     (most relevant entry first), then the next-best entries from the reserve."""
-    src, comp, trimmed = fit(plan_, draft, by_id, profile, base_src)
+    src, comp, trimmed = fit(plan_, draft, by_id, make)
     if not comp.ok:
         return src, comp, trimmed
     entries = draft.setdefault("entries", {})
     # 1. more bullets for the entries already on the page
     order = [x["id"] for sec in plan_["sections"] for x in sec["entries"]]
     for _ in range(30):
-        if fill_ratio(comp.pdf) >= FULL:
+        if fill_of(comp) >= FULL:
             return src, comp, trimmed
         eid = next((i for i in order if (entries.get(i) or {}).get("spare")), None)
         if not eid:
             break
         block = entries[eid]
         block["bullets"].append(block["spare"].pop(0))
-        src2, comp2, ok = _try(plan_, draft, by_id, profile, base_src)
+        src2, comp2, ok = _try(plan_, draft, by_id, make)
         if not ok:
             block["spare"].insert(0, block["bullets"].pop())  # that one doesn't fit: this entry is done
             order.remove(eid)
@@ -650,7 +665,7 @@ def fit_and_fill(plan_: dict, draft: dict, by_id: dict, profile, base_src: str |
     # 2. the next-best entries (written by the writer as reserve material), each in its own section
     headings = plan_.get("headings") or {}
     for r in list(plan_.get("reserve") or []):
-        if fill_ratio(comp.pdf) >= FULL:
+        if fill_of(comp) >= FULL:
             break
         block = entries.get(r["id"]) or {}
         e = by_id.get(r["id"])
@@ -667,7 +682,7 @@ def fit_and_fill(plan_: dict, draft: dict, by_id: dict, profile, base_src: str |
         placed = False
         for n in range(len(all_bullets), 0, -1):  # as many of its bullets as fit
             block["bullets"] = all_bullets[:n]
-            src2, comp2, ok = _try(plan_, draft, by_id, profile, base_src)
+            src2, comp2, ok = _try(plan_, draft, by_id, make)
             if ok:
                 src, comp, placed = src2, comp2, True
                 block["spare"] = all_bullets[n:] + list(block.get("spare") or [])
@@ -690,6 +705,21 @@ def skills_source(entries: list[dict], profile) -> str:
     return "\n".join(skill_lines + ([prof.group(1)] if prof else []) + ["Also named in entries: " + ", ".join(tags)])
 
 
+def _base(base_key: str | None, entries: list[dict], profile) -> dict:
+    """The person's own resume this one is laid out like: their Word file when the chosen resume has one (edited in
+    place, no LaTeX needed), else their LaTeX (or a clean default)."""
+    docx = config.RESUME_DOCX.get(base_key)
+    if docx:
+        from . import word
+
+        return {"format": "docx", "src": None, "titles": word.section_titles(docx), "text": word.parse(docx)["text"],
+                "make": word.bank_maker(docx, entries)}
+    base_tex = config.RESUME_TEX.get(base_key) or next(iter(config.RESUME_TEX.values()), None)
+    src = base_tex.read_text(encoding="utf-8") if base_tex else None
+    return {"format": "tex", "src": src, "titles": None, "text": tex.document_plain(src) if src else "",
+            "make": tex_maker(profile, src)}
+
+
 def build_draft(job: dict, info: dict, profile, base_key: str | None = None, log=print) -> dict:
     """Plan -> write -> adversarial review + revise (x2) -> verify -> render + fit. Saves the PDF next to the job's other
     tailored files; returns the resume_edits payload for Resume review."""
@@ -702,12 +732,11 @@ def build_draft(job: dict, info: dict, profile, base_key: str | None = None, log
         raise bank.BankError("The experience bank is nearly empty: import your resumes or add entries first")
     by_id = {e["id"]: e for e in entries}
     base_key = base_key or info.get("chosen")
-    base_tex = config.RESUME_TEX.get(base_key) or next(iter(config.RESUME_TEX.values()), None)
-    base_src = base_tex.read_text(encoding="utf-8") if base_tex else None
+    base = _base(base_key, entries, profile)
     sk_src = skills_source(entries, profile)
 
-    template = template_sections(base_src)
-    p = plan(job, info, entries, profile, own_headings(base_src), template)
+    template = template_sections(base["src"], base["titles"])
+    p = plan(job, info, entries, profile, own_headings(base["src"], base["titles"]), template)
     p["base_skills"] = base_skill_lines(base_key)
     log(f"    bank resume: {p['pages']} page(s), sections {', '.join(s['heading'] for s in p['sections'])}")
     draft = pin(write(job, info, p, by_id, sk_src), p, by_id)
@@ -728,11 +757,10 @@ def build_draft(job: dict, info: dict, profile, base_key: str | None = None, log
                      for b in (final["entries"].get(x["id"]) or {}).get("bullets", []))
     final["skills"], skills_added, skills_excluded = merge_skills(
         p["base_skills"], verify_skills(final.get("skills") or [], sk_src), info.get("terms") or [],
-        tex.document_plain(base_src) if base_src else "", shown,
-        sk_src + "\n" + "\n".join(e["text"] for e in entries))
+        base["text"], shown, sk_src + "\n" + "\n".join(e["text"] for e in entries))
     if skills_added:
         log(f"    skills added from the posting: {', '.join(a['skill'] for a in skills_added if not a.get('suggested'))}")
-    src, comp, trimmed = fit_and_fill(p, final, by_id, profile, base_src)
+    src, comp, trimmed = fit_and_fill(p, final, by_id, base["make"])
     if not comp.ok:
         raise RuntimeError(f"LaTeX didn't compile: {comp.log[-300:]}")
 
@@ -742,19 +770,26 @@ def build_draft(job: dict, info: dict, profile, base_key: str | None = None, log
         if old.is_file():
             old.unlink()
     stem = resume_build.file_stem(job.get("role"))
-    (folder / f"{stem}.pdf").write_bytes(comp.pdf)
-    (folder / f"{stem}.tex").write_text(src, encoding="utf-8")
+    is_docx = base["format"] == "docx"
+    out_file = folder / f"{stem}{'.docx' if is_docx else '.pdf'}"
+    if is_docx:  # their own Word file with the bank's entries: uploaded as .docx
+        out_file.write_bytes(src)
+    else:
+        out_file.write_bytes(comp.pdf)
+        (folder / f"{stem}.tex").write_text(src, encoding="utf-8")
     terms = info.get("terms") or []
-    after = match.score(tex.document_plain(src), terms, set(info.get("equivalent", []))) if terms else {"pct": None}
+    text = comp.text if is_docx else tex.document_plain(src)
+    after = match.score(text, terms, set(info.get("equivalent", []))) if terms else {"pct": None}
     result = {
-        "mode": "bank", "base": base_key, "pages": comp.pages, "planned_pages": p["pages"], "plan": p,
+        "mode": "bank", "format": base["format"], "base": base_key, "pages": comp.pages, "planned_pages": p["pages"], "plan": p,
         "draft": final, "entries": {eid: {k: by_id[eid][k] for k in ("title", "org", "kind", "start", "end", "location")}
                                     for eid in final["entries"]},
         "evidence_text": {eid: by_id[eid]["text"][:4000] for eid in final["entries"]},
         "reviews": reviews, "dropped": dropped, "trimmed": trimmed,
         "pct_before": info.get("pct"), "pct_after": after.get("pct"),
         "skills_added": skills_added, "skills_excluded": skills_excluded,
-        "file": str((folder / f"{stem}.pdf").relative_to(config.ROOT)), "tex": str((folder / f"{stem}.tex").relative_to(config.ROOT)),
+        "file": str(out_file.relative_to(config.ROOT)),
+        "tex": None if is_docx else str((folder / f"{stem}.tex").relative_to(config.ROOT)),
         "resumes_version": resume_version(),
     }
     result["warnings"] = quality(p, final, comp, result)
@@ -774,7 +809,7 @@ def quality(plan_: dict, draft: dict, comp, result: dict) -> list[str]:
     missing = [DEFAULT_HEADINGS.get(t, t) for t in plan_.get("template") or [] if t not in shown]
     if missing:
         out.append(f"Sections from your resume that aren't on this one: {', '.join(missing)}")
-    fill = fill_ratio(comp.pdf)
+    fill = fill_of(comp)
     if comp.pages == 1 and fill < 0.8:
         out.append(f"The page is only about {fill:.0%} full: your bank didn't have enough relevant material for this job")
     elif comp.pages >= 2 and fill < 0.4:
@@ -800,17 +835,20 @@ def rebuild(job: dict, edits: dict, profile) -> dict:
     if "skills" in edits:
         draft["skills"] = [{"group": clean(g.get("group", "")), "items": clean(g.get("items", ""))} for g in edits["skills"]
                            if str(g.get("items", "")).strip()]
-    base_tex = config.RESUME_TEX.get(r.get("base")) or next(iter(config.RESUME_TEX.values()), None)
-    base_src = base_tex.read_text(encoding="utf-8") if base_tex else None
-    own = own_headings(base_src)
+    base = _base(r.get("base"), list(by_id.values()), profile)
+    if (r.get("format") or "tex") != base["format"]:
+        raise bank.BankError("Your resume's source file changed type since this draft was built: re-run the job")
+    own = own_headings(base["src"], base["titles"])
     for sec in r["plan"]["sections"]:  # drafts made before headings followed the person's resume
         sec["heading"] = own.get(sec["type"], sec["heading"])
-    src, comp, trimmed = fit_and_fill(r["plan"], draft, by_id, profile, base_src)
+    src, comp, trimmed = fit_and_fill(r["plan"], draft, by_id, base["make"])
     if not comp.ok:
         raise bank.BankError(f"LaTeX didn't compile: {comp.log[-200:]}")
-    pdf = config.ROOT / r["file"]
-    pdf.write_bytes(comp.pdf)
-    (config.ROOT / r["tex"]).write_text(src, encoding="utf-8")
+    if base["format"] == "docx":
+        (config.ROOT / r["file"]).write_bytes(src)
+    else:
+        (config.ROOT / r["file"]).write_bytes(comp.pdf)
+        (config.ROOT / r["tex"]).write_text(src, encoding="utf-8")
     r.update(draft=draft, pages=comp.pages, trimmed=trimmed)
     r["warnings"] = quality(r["plan"], draft, comp, r)
     return r

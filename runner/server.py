@@ -18,7 +18,7 @@ import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from . import config, db, userfiles
 from .config import ROOT
@@ -198,14 +198,13 @@ def health() -> list[dict]:
         item(True, f"Jev {os.getenv('JEV_MODEL') or ''}".strip())
     except Exception as e:
         item(False, "Jev decision model", str(e)[:160])
-    try:
-        from .resume import tex
+    from .resume import tex
 
-        tex.pdflatex_path()
+    if tex.find_pdflatex():  # a health check never downloads anything
         item(True, "LaTeX (pdflatex) installed: tailored resumes can be built")
-    except Exception:
-        item(False, "LaTeX (pdflatex): only needed for tailored resumes",
-             "Install MiKTeX (Windows) or TeX Live (Mac/Linux), or upload PDF-only resumes")
+    else:
+        item(False, "LaTeX (pdflatex): only needed for tailored LaTeX resumes",
+             "Installed automatically (TinyTeX, ~70 MB) the first time one is built; Word resumes don't need it")
     return out
 
 
@@ -213,9 +212,11 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):  # keep the console quiet
         pass
 
-    def _send(self, code: int, body: bytes, ctype: str = "application/json"):
+    def _send(self, code: int, body: bytes, ctype: str = "application/json", download: str | None = None):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
+        if download:  # a file the browser can't show (a .docx): save it under its own name
+            self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(download)}")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
@@ -275,9 +276,13 @@ class Handler(BaseHTTPRequestHandler):
         if m:
             with _files_lock:
                 cfg = config.activate(uid, required=False)
-            files = sorted((cfg.tailored_dir / m.group(1)).glob("*.pdf")) if cfg else []
+            folder = cfg.tailored_dir / m.group(1) if cfg else None
+            files = sorted(folder.glob("*.pdf")) or sorted(folder.glob("*.docx")) if folder else []
             if not files:
                 return self._json(404, {"error": "no tailored resume for this job yet"})
+            if files[-1].suffix == ".docx":  # a tailored Word resume: downloaded, opens in Word
+                return self._send(200, files[-1].read_bytes(), "application/vnd.openxmlformats-officedocument."
+                                  "wordprocessingml.document", download=files[-1].name)
             return self._send(200, files[-1].read_bytes(), "application/pdf")
         if path == "/api/status":
             return self._json(200, status(uid))
