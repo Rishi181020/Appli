@@ -338,7 +338,7 @@ def _draft_tailoring(jid: int, job: dict, info: dict, profile: Profile):
             print(f"    job {jid}: bank resume failed ({type(e).__name__}: {str(e)[:100]}) - trying skills-only tailoring")
             if not info.get("tailorable", True):
                 update(jid, status="queued", resume_review="dismissed", resume_edits={"dismissed_for": resume_select.resume_version()},
-                       status_reason=f"Building from the bank failed ({type(e).__name__}); will use the best base resume")
+                       status_reason=f"Building from the bank failed ({str(e)[:120] or type(e).__name__}); will use the best base resume")
                 return
     profile_text = profile.text
     try:
@@ -357,6 +357,17 @@ def _draft_tailoring(jid: int, job: dict, info: dict, profile: Profile):
         update(jid, status="queued", resume_review="dismissed", resume_edits={"dismissed_for": resume_select.resume_version()},
                status_reason=f"Tailoring failed ({type(e).__name__}); will use the best base resume")
         print(f"    job {jid}: tailoring failed: {type(e).__name__}: {str(e)[:100]}")
+
+
+def _has_latex() -> bool:
+    """Every tailored resume is compiled with pdflatex: without it, drafting one only wastes model calls."""
+    from .resume import tex
+
+    try:
+        tex.pdflatex_path()
+        return True
+    except RuntimeError:
+        return False
 
 
 def _choose_resume(job: dict, profile: Profile) -> tuple[str, Path, dict | None, str]:
@@ -389,6 +400,8 @@ def _choose_resume(job: dict, profile: Profile) -> tuple[str, Path, dict | None,
             why = "not tailoring: you chose the base resume (or no safe edits were found) for these resumes"
         elif not SCHEMA["tailoring"]:
             why = "not tailoring: run supabase/migrations/002 and 003"
+        elif not _has_latex():
+            why = "not tailoring: LaTeX isn't installed on this computer (install MiKTeX from miktex.org, then restart Appli)"
         elif bank_ready():
             action = "tailor"  # a resume built for this job from the experience bank
             info["addable"] = []
