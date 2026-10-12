@@ -11,7 +11,7 @@ import difflib
 import re
 
 from .. import config, jev
-from . import match, select, tex
+from . import match, select, tex, word
 
 MAX_SKILLS = 15
 _TOKEN = re.compile(r"[A-Za-z0-9+#./'-]+")
@@ -107,10 +107,14 @@ def propose(job: dict, info: dict, profile_text: str) -> dict:
         "threshold": config.RESUME_MATCH_THRESHOLD, "edits": [], "gaps": [], "problems": [],
     }
     if not doc.get("tailorable", True):
-        result["problems"].append({"kind": "no_latex", "detail": "This resume is PDF-only: add its LaTeX source "
-                                   "(.tex) on the My files tab to enable tailoring."})
+        result["problems"].append({"kind": "no_latex", "detail": "This resume is PDF-only: add its Word (.docx) or "
+                                   "LaTeX (.tex) source on the My files tab to enable tailoring."})
         return result
-    lines = [u for u in doc["units"] if u.kind == "skill" and tex.is_editable(u)]
+    is_docx = doc.get("format") == "docx"
+    result["format"] = doc.get("format", "tex")
+    shown = (lambda s: s) if is_docx else tex.plain  # Word text is already plain
+    join = word.compose if is_docx else compose
+    lines = [u for u in doc["units"] if u.kind == "skill" and (is_docx or tex.is_editable(u))]
     if not wanted:
         result["problems"].append({"kind": "nothing_to_add", "detail": "Every skill in the posting is already on this resume."})
         return result
@@ -124,16 +128,16 @@ def propose(job: dict, info: dict, profile_text: str) -> dict:
         unit = by_id[placement[t["term"]]]
         backed = match.supported(t, ev_norm)
         shown_as = not backed and t["term"] in equivalent
-        skill_tex = tex.from_markup(t["term"])
-        after_tex = compose(unit.text, [skill_tex])
-        added_words, removed_words = word_diff(tex.plain(unit.text), tex.plain(after_tex))
+        skill_tex = t["term"] if is_docx else tex.from_markup(t["term"])
+        after_tex = join(unit.text, [skill_tex])
+        added_words, removed_words = word_diff(shown(unit.text), shown(after_tex))
         result["edits"].append({
             "id": f"e{len(result['edits']) + 1}", "unit_id": unit.id, "kind": "skill", "context": unit.context,
             "skill": t["term"], "skill_tex": skill_tex, "category": t.get("category", "concept"),
             "required": bool(t.get("required")),
             "support": "backed" if backed else ("shown_as" if shown_as else "not_found"),
             "default": backed or shown_as,
-            "before": tex.plain(unit.text), "after": tex.plain(after_tex),
+            "before": shown(unit.text), "after": shown(after_tex),
             "before_tex": unit.text, "after_tex": after_tex,
             "keywords_added": [t["term"]],
             "evidence": (_evidence_snippet(t, evidence) if backed else
@@ -145,11 +149,13 @@ def propose(job: dict, info: dict, profile_text: str) -> dict:
 
     # projected match with the default (backed) skills added
     defaults = [e for e in result["edits"] if e["default"]]
-    new_src = apply(doc["src"], doc["units"], defaults)
-    after = match.score(tex.document_plain(new_src), info["terms"], set(info.get("equivalent", [])))
+    if is_docx:
+        text_with = lambda edits: word.apply(config.RESUME_DOCX[key], additions(edits))[1]
+    else:
+        text_with = lambda edits: tex.document_plain(apply(doc["src"], doc["units"], edits))
+    after = match.score(text_with(defaults), info["terms"], set(info.get("equivalent", [])))
     result["pct_after"] = round(after["pct"], 4)
-    all_src = apply(doc["src"], doc["units"], result["edits"])
-    result["pct_if_all"] = round(match.score(tex.document_plain(all_src), info["terms"])["pct"], 4)
+    result["pct_if_all"] = round(match.score(text_with(result["edits"]), info["terms"])["pct"], 4)
     if result["gaps"]:
         result["problems"].append({
             "kind": "not_in_materials", "terms": result["gaps"],
@@ -164,10 +170,16 @@ def propose(job: dict, info: dict, profile_text: str) -> dict:
     return result
 
 
-def apply(src: str, units: list[tex.Unit], edits: list[dict]) -> str:
-    """Apply a set of skill suggestions: several skills on the same line are appended together."""
+def additions(edits: list[dict]) -> dict[str, list[str]]:
+    """unit id -> the skills to append to that line (several skills on one line go in together)."""
     per_line: dict[str, list[str]] = {}
     for e in edits:
         per_line.setdefault(e["unit_id"], []).append(e.get("skill_tex") or tex.from_markup(e["keywords_added"][0]))
+    return per_line
+
+
+def apply(src: str, units: list[tex.Unit], edits: list[dict]) -> str:
+    """Apply a set of skill suggestions to the LaTeX source."""
+    per_line = additions(edits)
     by_id = {u.id: u for u in units}
     return tex.apply_edits(src, units, {uid: compose(by_id[uid].text, s) for uid, s in per_line.items() if uid in by_id})

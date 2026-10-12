@@ -1,4 +1,4 @@
-"""Turn the skills Rishi ticked into a tailored PDF.
+"""Turn the skills Rishi ticked into a tailored PDF (LaTeX resumes) or .docx (Word resumes).
 
 Saved as resumes/tailored/<job id>/<First name> Resume <Role>.pdf, the industry-standard name: no company in it,
 same pattern as the base resumes ("Rishi Resume SWE.pdf"). The job id folder keeps two jobs with the same role apart.
@@ -9,7 +9,7 @@ import re
 from .. import config
 from ..db import sb
 from ..profile import load_profile
-from . import match, tailor, tex
+from . import match, tailor, tex, word
 
 _NOISE = re.compile(
     r"\b(20\d\d|new ?grads?|new graduates?|university (grad|graduate)s?|college grads?|graduates?|early[- ]career|"
@@ -44,29 +44,38 @@ def build(job: dict, accepted: list[str]) -> dict:
     edits = job.get("resume_edits") or {}
     info = job.get("resume_match") or {}
     key = edits.get("base")
-    if not key or key not in config.RESUME_TEX:
+    is_docx = edits.get("format") == "docx"
+    if not key or key not in (config.RESUME_DOCX if is_docx else config.RESUME_TEX):
         return {"ok": False, "error": "No tailoring suggestion for this job."}
     chosen = [e for e in edits.get("edits", []) if e["id"] in set(accepted)]
     if not chosen:
         return {"ok": False, "error": "Tick at least one skill to build a tailored resume."}
 
-    src = config.RESUME_TEX[key].read_text(encoding="utf-8")
-    units = tex.parse(src)
+    if is_docx:
+        units = word.parse(config.RESUME_DOCX[key])["units"]
+    else:
+        src = config.RESUME_TEX[key].read_text(encoding="utf-8")
+        units = tex.parse(src)
     by_id = {u.id: u for u in units}
     for e in chosen:  # the base file may have changed since the suggestion was made
         u = by_id.get(e["unit_id"])
         if u is None or u.text != e["before_tex"]:
             return {"ok": False, "error": f"Your {key} resume changed since this suggestion was made. Re-run the job to refresh it."}
-    new_src = tailor.apply(src, units, chosen)
 
-    comp = tex.compile_tex(new_src)
-    if not comp.ok:
-        return {"ok": False, "error": f"LaTeX failed to compile: {comp.log[:300]}"}
-    if comp.pages != 1:
-        return {"ok": False, "error": f"With these skills the resume is {comp.pages} pages. Untick a few so it fits on one page."}
+    if is_docx:  # uploaded as .docx: no LaTeX, and Word re-flows the page itself
+        data, text = word.apply(config.RESUME_DOCX[key], tailor.additions(chosen))
+        new_src, ext = None, ".docx"
+    else:
+        new_src = tailor.apply(src, units, chosen)
+        comp = tex.compile_tex(new_src)
+        if not comp.ok:
+            return {"ok": False, "error": f"LaTeX failed to compile: {comp.log[:300]}"}
+        if comp.pages != 1:
+            return {"ok": False, "error": f"With these skills the resume is {comp.pages} pages. Untick a few so it fits on one page."}
+        data, text, ext = comp.pdf, tex.document_plain(new_src), ".pdf"
 
     terms = info.get("terms") or []
-    after = (match.score(tex.document_plain(new_src), terms, set(info.get("equivalent", []))) if terms
+    after = (match.score(text, terms, set(info.get("equivalent", []))) if terms
              else {"pct": None, "missing": []})
     added = [e["skill"] if "skill" in e else e["keywords_added"][0] for e in chosen]
 
@@ -75,9 +84,10 @@ def build(job: dict, accepted: list[str]) -> dict:
     for old in folder.glob("*"):  # a rebuild replaces the previous version (the role name may have changed)
         old.unlink()
     stem = file_stem(job.get("role"))
-    pdf_path = folder / f"{stem}.pdf"
-    pdf_path.write_bytes(comp.pdf)
-    (folder / f"{stem}.tex").write_text(new_src, encoding="utf-8")
+    pdf_path = folder / f"{stem}{ext}"
+    pdf_path.write_bytes(data)
+    if new_src is not None:
+        (folder / f"{stem}.tex").write_text(new_src, encoding="utf-8")
     not_found = [e["skill"] for e in chosen if e.get("support") == "not_found"]
     lines = [
         f"# {stem}  (for {job['company']} - {job.get('role')}, job {job['id']})",

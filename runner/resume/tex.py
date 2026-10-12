@@ -179,13 +179,103 @@ def latex_problems(fragment: str) -> list[str]:
 
 
 # ---- compiling ------------------------------------------------------------------------------
-def pdflatex_path() -> str:
+_HOME = Path.home()
+_APPDATA = Path(os.environ.get("APPDATA", _HOME))
+# TinyTeX: a small TeX Live with the real pdflatex, installed into the person's own folders (no admin rights)
+_TINYTEX_HOME = {"win32": _APPDATA / "TinyTeX", "darwin": _HOME / "Library/TinyTeX"}.get(sys.platform, _HOME / ".TinyTeX")
+_TINYTEX_URL = "https://github.com/rstudio/tinytex-releases/releases/download/daily/TinyTeX-1-{}"
+_EXE = "pdflatex.exe" if sys.platform == "win32" else "pdflatex"
+
+
+def find_pdflatex() -> str | None:
+    """An installed pdflatex: on PATH, MiKTeX, TinyTeX, TeX Live or MacTeX (installers don't always update PATH)."""
     found = shutil.which("pdflatex")
     if found:
         return found
-    if _MIKTEX.exists():
-        return str(_MIKTEX)
-    raise RuntimeError("pdflatex not found. Install MiKTeX or add pdflatex to PATH.")
+    pf = Path(os.environ.get("ProgramFiles", "C:/Program Files"))
+    candidates = [_MIKTEX, pf / "MiKTeX/miktex/bin/x64" / _EXE, Path("/Library/TeX/texbin/pdflatex")]
+    for root in (_TINYTEX_HOME, Path("C:/ProgramData/TinyTeX"), *sorted(Path("C:/texlive").glob("20*"), reverse=True),
+                 *sorted(Path("/usr/local/texlive").glob("20*"), reverse=True)):
+        candidates += sorted(root.glob(f"bin/*/{_EXE}"))
+    return next((str(p) for p in candidates if p.is_file()), None)
+
+
+def install_tinytex(target: Path = _TINYTEX_HOME, log=print) -> str:
+    """Download TinyTeX (~70 MB, one time) into `target` -> its pdflatex. Missing LaTeX packages are added on first use."""
+    import platform
+    import tarfile
+    import urllib.request
+
+    arch = "arm64" if platform.machine().lower() in ("arm64", "aarch64") else "x86_64"
+    name = {"win32": "windows.exe", "darwin": "darwin.tar.xz"}.get(sys.platform, f"linux-{arch}.tar.xz")
+    log(f"    LaTeX isn't installed: downloading TinyTeX (~70 MB, one time) into {target}...")
+    with tempfile.TemporaryDirectory() as d:
+        bundle = Path(d) / f"TinyTeX-1-{name}"
+        urllib.request.urlretrieve(_TINYTEX_URL.format(name), bundle)
+        out = Path(d) / "x"
+        out.mkdir()
+        if name.endswith(".exe"):  # a self-extracting archive: -y unpacks it into the current folder
+            subprocess.run([str(bundle), "-y"], cwd=out, check=True, capture_output=True,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        else:
+            with tarfile.open(bundle) as t:
+                t.extractall(out, filter="data")
+        exe = next(out.glob(f"*/bin/*/{_EXE}"), None)  # the archive's one top folder (TinyTeX or .TinyTeX)
+        if exe is None:
+            raise RuntimeError("TinyTeX download had no pdflatex in it")
+        shutil.rmtree(target, ignore_errors=True)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(exe.parents[2]), str(target))
+    found = next(target.glob(f"bin/*/{_EXE}"), None)
+    if found is None:
+        raise RuntimeError(f"TinyTeX installed, but no pdflatex under {target}")
+    log("    TinyTeX installed")
+    return str(found)
+
+
+_installed: list[str] = []  # one install attempt per process
+
+
+def pdflatex_path() -> str:
+    """pdflatex, installing TinyTeX the first time none is found."""
+    found = find_pdflatex() or (_installed[0] if _installed else None)
+    if found:
+        return found
+    try:
+        _installed.append(install_tinytex())
+    except Exception as e:
+        _installed.append("")
+        raise RuntimeError(f"pdflatex not found and TinyTeX couldn't be installed ({type(e).__name__}: {str(e)[:120]}). "
+                           "Install MiKTeX (miktex.org) or TeX Live.") from e
+    if not _installed[0]:
+        raise RuntimeError("pdflatex not found. Install MiKTeX (miktex.org) or TeX Live.")
+    return _installed[0]
+
+
+def _tlmgr_install(pdflatex: str, log_text: str) -> bool:
+    """TeX Live / TinyTeX only: install the package that has the file this compile was missing. True = try again."""
+    tlmgr = Path(pdflatex).with_name("tlmgr.bat" if sys.platform == "win32" else "tlmgr")
+    m = re.search(r"File `([^']+)' not found", log_text)
+    f = re.search(r"! Font \\[^=]+=(\S+?)(?: at| scaled|\s)", log_text) if not m else None
+    lang = re.search(r"Package babel Error: Unknown option [`']([\w-]+)'", log_text)  # language files: babel-<lang>
+    missing = m.group(1) if m else (f.group(1) + ".tfm" if f else None)
+    if not (tlmgr.exists() and (missing or lang)):
+        return False
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+    try:
+        if lang:
+            pkg, missing = f"babel-{lang.group(1)}", f"babel option {lang.group(1)}"
+        else:
+            found = subprocess.run([str(tlmgr), "search", "--global", "--file", "/" + missing], capture_output=True,
+                                   text=True, timeout=180, creationflags=flags).stdout
+            pkg = next(iter(re.findall(r"^([\w.-]+):\s*$", found, re.M)), None)
+        if not pkg:
+            return False
+        print(f"    LaTeX: installing the '{pkg}' package (for {missing})")
+        return subprocess.run([str(tlmgr), "install", pkg], capture_output=True, timeout=600,
+                              creationflags=flags).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 
 @dataclass
@@ -200,14 +290,18 @@ def compile_tex(src: str, timeout: int = 240) -> Compiled:
     with tempfile.TemporaryDirectory() as d:
         (Path(d) / "main.tex").write_text(src, encoding="utf-8")
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
-        try:
-            proc = subprocess.run(
-                [pdflatex_path(), "--enable-installer", "-interaction=nonstopmode", "-halt-on-error", "main.tex"],
-                cwd=d, capture_output=True, timeout=timeout, creationflags=flags,
-            )
-        except subprocess.TimeoutExpired:
-            return Compiled(False, 0, None, "pdflatex timed out")
-        out = proc.stdout.decode("utf-8", errors="replace")
+        exe = pdflatex_path()
+        # MiKTeX fetches missing packages itself; TeX Live / TinyTeX get them through tlmgr, one per retry
+        cmd = [exe, *(["--enable-installer"] if "miktex" in exe.lower() else []),
+               "-interaction=nonstopmode", "-halt-on-error", "main.tex"]
+        for _ in range(15):
+            try:
+                proc = subprocess.run(cmd, cwd=d, capture_output=True, timeout=timeout, creationflags=flags)
+            except subprocess.TimeoutExpired:
+                return Compiled(False, 0, None, "pdflatex timed out")
+            out = proc.stdout.decode("utf-8", errors="replace")
+            if proc.returncode == 0 or not _tlmgr_install(exe, out):
+                break
         pdf_path = Path(d) / "main.pdf"
         if proc.returncode != 0 or not pdf_path.exists():
             errs = [ln for ln in out.splitlines() if ln.startswith("!")]

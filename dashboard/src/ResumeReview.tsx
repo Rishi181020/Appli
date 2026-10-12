@@ -145,7 +145,7 @@ function Card({ job, onChanged }: { job: ResumeJob; onChanged: () => void }) {
           <IconCheck /> Built with {edits.built?.accepted.length ?? 0} added skill(s) and saved as <code>{job.resume_file}</code>. Skills added:{" "}
           <b>{(edits.built?.added_words ?? []).join(", ") || "none"}</b>.
           <a className="btn small-btn" href={tailoredPdfUrl(job.id)} target="_blank" rel="noreferrer">
-            Open PDF <IconExternal />
+            {job.resume_file?.endsWith(".docx") ? "Download Word file" : "Open PDF"} <IconExternal />
           </a>
         </div>
       ) : null}
@@ -227,7 +227,7 @@ function Card({ job, onChanged }: { job: ResumeJob; onChanged: () => void }) {
               {result.next ?? ""}
               {result.db_warning && <div className="small">Not recorded in the database: run the 002 migration. ({result.db_warning})</div>}
               <a className="btn small-btn" href={tailoredPdfUrl(job.id)} target="_blank" rel="noreferrer">
-                Open PDF <IconExternal />
+                {result.file?.endsWith(".docx") ? "Download Word file" : "Open PDF"} <IconExternal />
               </a>
               {result.queued && (
                 <button className="btn primary small-btn" disabled={busy} onClick={fillNow}>

@@ -57,6 +57,7 @@ PROFILE_PATH: Path | None = None
 COVER_LETTER: Path | None = None
 RESUMES: dict[str, Path] = {}  # key -> PDF that gets uploaded
 RESUME_TEX: dict[str, Path] = {}  # key -> LaTeX source (= tailorable)
+RESUME_DOCX: dict[str, Path] = {}  # key -> Word source (= tailorable, the tailored copy is uploaded as .docx)
 RESUME_LABELS: dict[str, str] = {}
 RESUME_FOCUS: dict[str, str] = {}
 RESUME_TITLE_KEYWORDS: dict[str, list[str]] = {}
@@ -66,13 +67,13 @@ TAILORED_DIR = ROOT / "out" / "tailored"
 
 def activate(owner_id: str, required: bool = True) -> userconfig.UserConfig | None:
     """Point every setting above at this person's folder."""
-    global USER, HOME, PROFILE_PATH, COVER_LETTER, RESUMES, RESUME_TEX, RESUME_LABELS, RESUME_FOCUS
+    global USER, HOME, PROFILE_PATH, COVER_LETTER, RESUMES, RESUME_TEX, RESUME_DOCX, RESUME_LABELS, RESUME_FOCUS
     global RESUME_TITLE_KEYWORDS, PRIMARY_TEX, TAILORED_DIR
     cfg = userconfig.load(owner_id)
     if cfg is None:
         # never leave another person's folder active (the server handles several people on one computer)
         USER = HOME = PROFILE_PATH = COVER_LETTER = PRIMARY_TEX = None
-        RESUMES, RESUME_TEX, RESUME_LABELS, RESUME_FOCUS, RESUME_TITLE_KEYWORDS = {}, {}, {}, {}, {}
+        RESUMES, RESUME_TEX, RESUME_DOCX, RESUME_LABELS, RESUME_FOCUS, RESUME_TITLE_KEYWORDS = {}, {}, {}, {}, {}, {}
         TAILORED_DIR = ROOT / "out" / "tailored"
         _apply_keys(None)
         if required:
@@ -82,7 +83,9 @@ def activate(owner_id: str, required: bool = True) -> userconfig.UserConfig | No
     USER, HOME, PROFILE_PATH, COVER_LETTER = cfg, cfg.folder, cfg.profile_path, cfg.cover_letter
     _apply_keys(cfg.folder)
     RESUMES = {r.key: r.pdf for r in cfg.resumes}
-    RESUME_TEX = {r.key: r.tex for r in cfg.resumes if r.tex and r.tex.exists()}
+    # the editable source sits in one slot: main.tex or main.docx
+    RESUME_TEX = {r.key: r.tex for r in cfg.resumes if r.tex and r.tex.exists() and r.tex.suffix == ".tex"}
+    RESUME_DOCX = {r.key: r.tex for r in cfg.resumes if r.tex and r.tex.exists() and r.tex.suffix == ".docx"}
     RESUME_LABELS = {r.key: r.label for r in cfg.resumes}
     RESUME_FOCUS = {r.key: r.focus for r in cfg.resumes}
     RESUME_TITLE_KEYWORDS = {r.key: r.title_keywords for r in cfg.resumes}

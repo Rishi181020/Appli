@@ -19,9 +19,10 @@ if [ ! -x .venv/bin/python ]; then
   echo "Setting up Python (first run only)..."
   python3 -m venv .venv
   .venv/bin/python -m pip install --quiet --upgrade pip
-  .venv/bin/pip install --quiet -r requirements.txt
-  .venv/bin/python -m playwright install chromium
 fi
+# every start: picks up packages added since (quick when nothing changed), and the browser this Playwright needs
+.venv/bin/pip install --quiet -r requirements.txt
+.venv/bin/python -m playwright install chromium
 
 if [ ! -d dashboard/node_modules ]; then
   echo "Installing dashboard dependencies (first run only)..."

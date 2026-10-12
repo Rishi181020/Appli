@@ -9,7 +9,7 @@ Appli fills job applications for you and **stops before Submit**: you review eve
 You also need:
 - Python 3.11+ and Node 18+.
 - Your own [OpenRouter](https://openrouter.ai/keys) API key with a little credit. A typical day costs cents.
-- Optional: MiKTeX (Windows) or TeX Live (Mac/Linux), only if you want tailored resumes built from LaTeX.
+- Nothing for tailored resumes: LaTeX is downloaded by itself the first time one is built (TinyTeX, ~70 MB), and Word resumes don't need it. An existing MiKTeX or TeX Live is used if you have one.
 
 ## 2. Install and start
 ```bash
@@ -24,8 +24,11 @@ The first time it installs everything (a few minutes) and opens http://localhost
 2. **Your name.** Your files go in `users/<Your Name>/` on your computer.
 3. **API key.** Paste your OpenRouter key. It's checked with OpenRouter and saved only in your folder on this computer
    (never uploaded); every run uses it. Change it later on **My files → API key**, where you can also pick other models.
-4. **Resumes.** Add each version you use (SWE, AI, full-stack…) as a PDF.
-   - If you also add its LaTeX `main.tex`, missing skills can be added to a tailored copy for you to approve.
+4. **Resumes.** Add each version you use (SWE, AI, full-stack…). Under 80% match, missing skills can be added to a
+   tailored copy for you to approve, but only from a file Appli can edit:
+   - **Word resume:** upload the `.docx`. Nothing else needed.
+   - **LaTeX resume** (e.g. Overleaf): upload the PDF and its `.tex`.
+   - **Only a PDF:** matching and filling work, but no tailoring (a PDF has no editable text). Add its Word or LaTeX file later.
    - A one-line description of each resume is drafted for you; edit it if it's off.
 5. **Cover letter** (optional). One you've written before, used as the voice for new ones.
 6. **Profile.**

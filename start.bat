@@ -28,9 +28,10 @@ if not exist .venv\Scripts\python.exe (
   echo Setting up Python ^(first run only^)...
   python -m venv .venv || (pause & exit /b 1)
   .venv\Scripts\python -m pip install --quiet --upgrade pip
-  .venv\Scripts\pip install --quiet -r requirements.txt || (pause & exit /b 1)
-  .venv\Scripts\python -m playwright install chromium || (pause & exit /b 1)
 )
+rem every start: picks up packages added since (quick when nothing changed), and the browser this Playwright needs
+.venv\Scripts\pip install --quiet -r requirements.txt || (pause & exit /b 1)
+.venv\Scripts\python -m playwright install chromium || (pause & exit /b 1)
 
 if not exist dashboard\node_modules (
   echo Installing dashboard dependencies ^(first run only^)...

@@ -42,10 +42,12 @@ function ResumeCard({ r, busy, run }: { r: ResumeFile; busy: boolean; run: (fn: 
             <code>{r.pdf}</code>
             {r.tex ? (
               <span className="chip-tag ok-tag">
-                <IconCheck /> LaTeX: tailoring on
+                <IconCheck /> {r.source === "docx" ? "Word" : "LaTeX"}: tailoring on
               </span>
             ) : (
-              <span className="chip-tag">PDF only: no tailoring</span>
+              <span className="chip-tag" title="Add the Word or LaTeX file this PDF was made from to enable tailoring">
+                PDF only: no tailoring
+              </span>
             )}
           </div>
         </div>
@@ -61,19 +63,19 @@ function ResumeCard({ r, busy, run }: { r: ResumeFile; busy: boolean; run: (fn: 
           </button>
         )}
         <Pick
-          label="Replace PDF"
-          accept=".pdf,application/pdf"
+          label="Replace resume"
+          accept=".pdf,application/pdf,.docx"
           disabled={busy}
           onFile={(f) => run(async () => agent("/api/files/resume", { key: r.key, label, focus, pdf: await fileToBase64(f) }))}
         />
-        {r.tex ? (
+        {r.pdf.endsWith(".docx") ? null : r.tex ? (
           <button className="btn small-btn" disabled={busy} onClick={() => run(() => agent("/api/files/resume/remove-tex", { key: r.key }))}>
-            Remove .tex
+            Remove {r.source === "docx" ? "Word file" : ".tex"}
           </button>
         ) : (
           <Pick
-            label="Add LaTeX (.tex)"
-            accept=".tex"
+            label="Add Word or LaTeX source"
+            accept=".docx,.tex"
             disabled={busy}
             onFile={(f) => run(async () => agent("/api/files/resume", { key: r.key, label, focus, tex: await fileToBase64(f) }))}
           />
@@ -128,9 +130,23 @@ export function ResumeManager({ me, onChange }: { me: FolderStatus; onChange: On
   return (
     <div className="pf-list">
       <p className="muted small">
-        Add every version you use (e.g. SWE, AI, Full-stack). For each job the best-matching one is uploaded. Add the LaTeX source
-        (<code>main.tex</code>) too if you have it: then missing skills can be added to a tailored copy for you to approve.
+        Add every version you use (e.g. SWE, AI, Full-stack). For each job the best-matching one is uploaded. When a job matches
+        under 80%, Appli can add the posting's missing skills to a tailored copy for you to approve, but only from a file it can
+        edit:
       </p>
+      <ul className="muted small">
+        <li>
+          <b>Word resume:</b> upload the <code>.docx</code>. That's all: it's uploaded to applications and tailored as is.
+        </li>
+        <li>
+          <b>LaTeX resume</b> (e.g. Overleaf): upload the PDF <i>and</i> its <code>.tex</code>. LaTeX is set up by itself the
+          first time it's needed.
+        </li>
+        <li>
+          <b>Only a PDF:</b> upload it. Matching and filling work, but it can't be tailored: a PDF has no editable text. Add the
+          Word or LaTeX file it was made from later to turn tailoring on.
+        </li>
+      </ul>
       {me.resumes.map((r) => (
         <ResumeCard key={`${r.key}-${r.label}-${r.focus}-${r.tex}`} r={r} busy={busy} run={(fn) => run(fn)} />
       ))}
@@ -144,8 +160,10 @@ export function ResumeManager({ me, onChange }: { me: FolderStatus; onChange: On
           <div className="pf-field">
             <span>Files</span>
             <div className="row wrap">
-              <Pick label={pdf ? `PDF: ${pdf.name}` : "Choose PDF"} accept=".pdf,application/pdf" onFile={setPdf} primary={!pdf} />
-              <Pick label={tex ? `LaTeX: ${tex.name}` : "LaTeX .tex (optional)"} accept=".tex" onFile={setTex} />
+              <Pick label={pdf ? `Resume: ${pdf.name}` : "Choose resume (PDF or Word)"} accept=".pdf,application/pdf,.docx" onFile={setPdf} primary={!pdf} />
+              {pdf && !pdf.name.toLowerCase().endsWith(".docx") && (
+                <Pick label={tex ? `Source: ${tex.name}` : "+ its .tex or .docx (for tailoring)"} accept=".docx,.tex" onFile={setTex} />
+              )}
             </div>
           </div>
         </div>

@@ -18,6 +18,7 @@ export type BankEdits = {
   pct_before: number | null;
   pct_after: number | null;
   file: string;
+  format?: "tex" | "docx";
   skills_added?: { skill: string; group: string; backed: boolean; suggested?: boolean }[];
   skills_excluded?: string[];
   warnings?: string[];
@@ -30,6 +31,7 @@ export const isBank = (j: ResumeJob) => (j.resume_edits as unknown as { mode?: s
 /** A resume built for this job from the experience bank, waiting for your approval. */
 export default function BankCard({ job, onChanged }: { job: ResumeJob; onChanged: () => void }) {
   const r = job.resume_edits as unknown as BankEdits;
+  const doc = r.format === "docx" ? "Word file" : "PDF"; // a Word resume is built in its own file and uploaded as .docx
   const built = job.resume_review === "built";
   const [bullets, setBullets] = useState<Record<string, string[]>>(() =>
     Object.fromEntries(Object.entries(r.draft.entries).map(([id, b]) => [id, b.bullets.map((x) => x.text)]))
@@ -74,7 +76,7 @@ export default function BankCard({ job, onChanged }: { job: ResumeJob; onChanged
   }
 
   async function rebuild() {
-    const x = await call("rebuild", "/api/bank/rebuild", { job_id: job.id, bullets, skills }, (x) => `PDF rebuilt with your edits (${x.pages} page(s)).`);
+    const x = await call("rebuild", "/api/bank/rebuild", { job_id: job.id, bullets, skills }, (x) => `${doc} rebuilt with your edits (${r.format === "docx" ? "about " : ""}${x.pages} page(s)).`);
     if (x) {
       setDirty(false);
       setV((n) => n + 1);
@@ -136,7 +138,7 @@ export default function BankCard({ job, onChanged }: { job: ResumeJob; onChanged
         <span className="small muted">{timeAgo(job.updated_at)}</span>
         <div className="spacer" />
         <a className="btn small-btn" href={`${tailoredPdfUrl(job.id)}&v=${v}`} target="_blank" rel="noreferrer">
-          Open PDF <IconExternal />
+          {r.format === "docx" ? "Download Word file" : "Open PDF"} <IconExternal />
         </a>
       </div>
 
@@ -301,7 +303,7 @@ export default function BankCard({ job, onChanged }: { job: ResumeJob; onChanged
           </button>
           {dirty && (
             <button className="btn" disabled={!!busy} onClick={rebuild}>
-              <IconRefresh /> {busy === "rebuild" ? "Rebuilding…" : "Rebuild PDF with my edits"}
+              <IconRefresh /> {busy === "rebuild" ? "Rebuilding…" : `Rebuild ${doc} with my edits`}
             </button>
           )}
           <button className="btn ghost" disabled={!!busy} onClick={useBase}>
