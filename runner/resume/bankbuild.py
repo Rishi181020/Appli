@@ -76,7 +76,8 @@ experience bank. Decide:
 - entries: pick the bank entries (by id) that best match the posting's requirements, most relevant first within each
   section. Fill the page: a 1-page resume holds about 16-20 bullets in total, so after the most relevant entries, use
   the next-best ones (a related project still beats empty space). Each picked entry gets a bullet count (1-5)
-  reflecting its relevance and how much real material it has.
+  reflecting its relevance and how much real material it has. The candidate's current or most recent job gets the
+  most bullets (4-5): it's what a recruiter reads first.
 - reserve: every other usable entry, best first, with a bullet count: they're added only if the page still has room.
 Use only entries whose kind fits the section. Never invent entries.
 Return JSON: {"pages": 1|2, "rationale": "<two sentences on the layout choice>",
@@ -88,6 +89,7 @@ _KIND_SECTION = {k: t for t, kinds in SECTION_KINDS.items() for k in kinds}
 
 
 _DATED = ("experience", "research", "leadership")
+CURRENT_JOB_BULLETS = 4
 _MONTHS = {m: i for i, m in enumerate(("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"), 1)}
 
 
@@ -174,6 +176,8 @@ def plan(job: dict, info: dict, entries: list[dict], profile, headings: dict[str
             sec["entries"] = []
         if t in _DATED:  # jobs read newest first, however relevant the model thought each was
             sec["entries"].sort(key=lambda x: _end_key(next(e for e in entries if e["id"] == x["id"])), reverse=True)
+        if t == "experience" and sec["entries"]:  # the current job is read first: it never gets the fewest bullets
+            sec["entries"][0]["bullets"] = max(sec["entries"][0]["bullets"], CURRENT_JOB_BULLETS)
         secs.append(sec)
     return {"pages": 2 if p.get("pages") == 2 else 1, "rationale": str(p.get("rationale") or "")[:600], "sections": secs,
             "reserve": reserve, "headings": headings, "template": template}
@@ -231,7 +235,7 @@ def write(job: dict, info: dict, plan_: dict, by_id: dict, skills_source: str, c
         user += (f"\n\nYOUR PREVIOUS DRAFT:\n{json.dumps(previous, ensure_ascii=False)}\n\n"
                  f"REVIEWER'S FINDINGS (fix every high and medium one; keep what was fine):\n"
                  f"{json.dumps(critique_.get('issues', []), ensure_ascii=False)}")
-    return llm.chat_json(_WRITE_SYSTEM, user, model=config.model("write"), max_tokens=12000,
+    return llm.chat_json(_WRITE_SYSTEM, user, model=config.model("write"), max_tokens=16000,
                          purpose="bank resume: revise" if previous else "bank resume: write")
 
 
@@ -296,6 +300,19 @@ def _found(evidence: str, text: str) -> bool:
         return True
     m = SequenceMatcher(None, ev, tx, autojunk=False).find_longest_match(0, len(ev), 0, len(tx))
     return m.size >= 0.85 * len(ev)
+
+
+def pin(draft: dict, plan_: dict, by_id: dict) -> dict:
+    """Entries with bullets the person wrote and approved use them word for word: as many as the plan gives the entry,
+    the rest as spares for the page fill. They are the person's own words, so the checks below pass them as edited."""
+    wanted = {x["id"]: x["bullets"] for s in plan_["sections"] for x in s["entries"]}
+    entries = draft.setdefault("entries", {})
+    for eid, e in by_id.items():
+        if e.get("pinned"):
+            mine = [{"text": t, "evidence": "", "terms": [], "edited": True} for t in e["pinned"]]
+            n = wanted.get(eid, len(mine))
+            entries[eid] = {"bullets": mine[:n], "spare": mine[n:]}
+    return draft
 
 
 def verify(draft: dict, by_id: dict) -> tuple[dict, list[dict]]:
@@ -693,18 +710,19 @@ def build_draft(job: dict, info: dict, profile, base_key: str | None = None, log
     p = plan(job, info, entries, profile, own_headings(base_src), template)
     p["base_skills"] = base_skill_lines(base_key)
     log(f"    bank resume: {p['pages']} page(s), sections {', '.join(s['heading'] for s in p['sections'])}")
-    draft = write(job, info, p, by_id, sk_src)
+    draft = pin(write(job, info, p, by_id, sk_src), p, by_id)
     reviews = []
     for round_ in (1, 2, 3):  # up to two revisions; the last review is of the final draft, for Resume review
         checked, dropped = verify(draft, by_id)
         r = critique(job, info, p, checked, by_id, sk_src)
+        r["issues"] = [i for i in r["issues"] if not by_id.get(i.get("entry"), {}).get("pinned")]  # your own words
         serious = [i for i in r["issues"] if i.get("severity") in ("high", "medium")]
         reviews.append({"round": round_, "verdict": r["verdict"], "score": r["score"], "model": r["model"], "issues": r["issues"],
                         "dropped_before_review": dropped})
         log(f"    adversarial review {round_}: score {r['score']}, {len(serious)} serious issue(s)")
         if not serious or round_ == 3:
             break
-        draft = write(job, info, p, by_id, sk_src, r, checked)
+        draft = pin(write(job, info, p, by_id, sk_src, r, checked), p, by_id)
     final, dropped = verify(draft, by_id)
     shown = " ".join(b["text"] for s in p["sections"] for x in s["entries"]
                      for b in (final["entries"].get(x["id"]) or {}).get("bullets", []))

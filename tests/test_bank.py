@@ -40,3 +40,11 @@ assert "Electron" in items["Frontend"] and "Kubernetes" in items["Tools, Infra &
 assert items["Databases & Data"].count("Neo4j") == 0 and "Supabase" in items["Databases & Data"], items  # no repeat
 assert items["Languages"][0] == "Python", items  # the posting's requirement first
 print("skills merge checks passed")
+
+# ---- pinned bullets: used word for word, as many as planned, the rest kept as spares ----
+from runner.resume.bankbuild import pin
+plan_ = {"sections": [{"type": "experience", "entries": [{"id": "job", "bullets": 2}]}]}
+d = pin({"entries": {"job": {"bullets": [{"text": "model words"}]}}}, plan_, {"job": {"pinned": ["A", "B", "C"]}, "other": {}})
+assert [b["text"] for b in d["entries"]["job"]["bullets"]] == ["A", "B"] and [b["text"] for b in d["entries"]["job"]["spare"]] == ["C"], d
+assert all(b["edited"] for b in d["entries"]["job"]["bullets"]), "pinned bullets skip the evidence check"
+print("pinned bullet checks passed")

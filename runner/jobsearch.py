@@ -425,7 +425,7 @@ def from_boards(boards: list[tuple[str, str, str]], titles: list[str], log) -> l
 # same role, different words: both the target titles and the posting titles are rewritten to one spelling first
 _CANON = [
     (r"\bmachine[- ]learning\b", "ml"), (r"\bartificial intelligence\b|\ba\.i\.", "ai"), (r"\bgen(erative)? ?ai\b", "ai"),
-    (r"\bsoftware development engineer\b|\bsde\b|\bswe\b", "software engineer"), (r"\bdeveloper\b", "engineer"),
+    (r"\bsoftware development engineer\b|\bsde\b|\bswe\b", "software engineer"), (r"\bdeveloper\b|\bengineering\b", "engineer"),
     (r"\bfull[- ]stack\b", "fullstack"), (r"\bback[- ]end\b", "backend"), (r"\bfront[- ]end\b", "frontend"),
 ]
 _INTERN = re.compile(r"\bintern(ship)?\b|\bco-?op\b", re.I)
@@ -470,14 +470,16 @@ def location_ok(loc: str, prefs: Prefs, country: str, state: str) -> bool:
         return True
     if canonical_country(country) == "united states":  # anywhere in the US
         # two-letter codes only as ", CA" (case-sensitive: "or", "in", "me" are words); full names any case
-        return bool(re.search(r",\s*(" + "|".join(US_STATES) + r")\b|\b(US|USA)\b", loc)
+        # SimplifyJobs writes "SF", "NYC", "LA" with no state
+        return bool(re.search(r",\s*(" + "|".join(US_STATES) + r")\b|\b(US|USA|SF|NYC|LA)\b", loc)
                     or re.search(r"united states|" + "|".join(re.escape(v) for v in US_STATES.values()), loc, re.I))
     return country.lower() in loc.lower() if country else True
 
 
 def keep(f: Found, prefs: Prefs, country: str, state: str, active_screens: frozenset[str]) -> str | None:
     """None = keep; else why it was filtered out (for the counts)."""
-    if prefs.titles and not title_matches(f.title, prefs.titles):
+    # the SimplifyJobs lists are already curated to early-career roles: take every position; boards list every opening
+    if prefs.titles and f.source not in ("New-grad list", "Internship list") and not title_matches(f.title, prefs.titles):
         return "title"
     low = f" {f.title.lower()} "
     if any(re.search(rf"(?<![a-z]){re.escape(x.lower())}(?![a-z])", low) for x in prefs.exclude):
@@ -685,7 +687,7 @@ def search(log=print) -> dict:
         "counts": counts,
         "results": [{**{k: v for k, v in asdict(f).items() if k not in ("description", "match")},
                      "fillable": f.ats in SUPPORTED, "scored": i < len(top), "added": False,
-                     "match": f.match} for i, f in enumerate(results[:300])],
+                     "match": f.match} for i, f in enumerate(results)],
     }
     save_found(out)
     log(f"Done: {len(kept)} relevant posting(s); top {len(top)} scored. Open Find jobs to pick.")
