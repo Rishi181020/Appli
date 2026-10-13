@@ -55,7 +55,9 @@ export default function RunCard({ status, offline, queued, ready, submittedToday
 
   const running = !!status?.running;
   const p = status?.progress;
-  const filling = running && p && p.current < p.total;
+  const filling = running && (status?.activity?.current
+    ? status.activity.current.stage !== "review"
+    : !!p && p.current <= p.total && !(status?.log ?? []).some(l => l.startsWith("Done:")));
 
   async function run() {
     setBusy(true);
@@ -108,8 +110,8 @@ export default function RunCard({ status, offline, queued, ready, submittedToday
     title = "Stopping…";
     sub = "Finishing the current step, then closing.";
   } else if (filling && p) {
-    title = `Filling application ${p.current} of ${p.total}`;
-    sub = p.label;
+    title = p.total ? `Preparing application ${p.current || 1} of ${p.total}` : "Preparing your batch";
+    sub = status?.activity?.current?.message ?? p.label;
   } else if (running) {
     title = "Review tabs are open";
     sub = "Submit each one yourself. Submissions are detected automatically.";

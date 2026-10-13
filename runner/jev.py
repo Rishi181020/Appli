@@ -2,7 +2,7 @@
 
 Used for decisions only: mapping a form question onto an answer we already know, picking a resume, screening postings.
 All questions in one request are answered in parallel and can't see each other, so send one request per form.
-The model id comes from JEV_MODEL in .env (see .env.example); nothing is hardcoded.
+The model id comes from JEV_MODEL in .env (see .env); nothing is hardcoded.
 """
 import os
 import time
@@ -24,7 +24,7 @@ def model_name() -> str:
     """JEV_MODEL from .env. Missing -> JevError, so callers fall back to the chat model instead of stopping."""
     name = (os.getenv("JEV_MODEL") or "typesafe/jev-1.13").strip()
     if not name:
-        raise JevError("JEV_MODEL is not set in .env (see .env.example)")
+        raise JevError("JEV_MODEL is not set in .env (see .env)")
     return name
 
 

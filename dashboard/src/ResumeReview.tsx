@@ -288,7 +288,7 @@ export default function ResumeReview() {
   }, [load]);
 
   const pending = jobs.filter((j) => j.resume_review === "pending");
-  const drafting = jobs.filter((j) => j.status === "tailoring" && j.resume_review !== "pending");
+  const drafting = jobs.filter((j) => j.status === "tailoring" && !j.resume_review);
   const built = jobs.filter((j) => j.resume_review === "built");
   const migration = error && /resume_(review|edits|match)|column/i.test(error);
 
@@ -332,7 +332,7 @@ export default function ResumeReview() {
 
       {loading ? (
         <div className="skeleton row-skel" />
-      ) : pending.length === 0 ? (
+      ) : pending.length === 0 && drafting.length === 0 ? (
         <div className="empty">
           <div className="empty-art">✦</div>
           <b>Nothing to review</b>

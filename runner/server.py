@@ -21,6 +21,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
 from . import config, db, userfiles
+from .activity import PREFIX, read_activity
 from .config import ROOT
 from .run import LOCK, OUT, STOP, running_pid
 
@@ -69,7 +70,8 @@ def status(owner_id: str) -> dict:
         "pid": pid,
         "stopping": STOP.exists() and pid is not None,
         "progress": _progress(log),
-        "log": log[-40:],
+        "activity": read_activity(log),
+        "log": [line for line in log if not line.startswith(PREFIX)][-40:],
     }
 
 
@@ -272,6 +274,19 @@ class Handler(BaseHTTPRequestHandler):
 
     def _get_api(self, path: str, user: dict):
         uid = user["id"]
+        m = re.fullmatch(r"/api/resume-studio/([a-f0-9]{32})/download", path)
+        if m:
+            from .resume import manual
+
+            with _files_lock:
+                if config.activate(uid, required=False) is None:
+                    return self._json(404, {"error": "Resume draft not found"})
+                target = manual.folder(m.group(1)) / "export"
+                files = sorted(target.glob("*.pdf")) or sorted(target.glob("*.docx"))
+                if not files:
+                    return self._json(404, {"error": "Build the resume before downloading"})
+                file = files[-1]
+                return self._send(200, file.read_bytes(), mimetypes.guess_type(file.name)[0] or "application/octet-stream", download=file.name)
         m = re.fullmatch(r"/api/resume/(\d+)\.pdf", path)
         if m:
             with _files_lock:
@@ -459,6 +474,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._jobs(body, save=True)
 
         # ---- resume tailoring
+        if path in ("/api/resume-studio/analyze", "/api/resume-studio/build"):
+            from .resume import manual
+
+            try:
+                result = manual.analyze(body) if path.endswith("/analyze") else manual.export(
+                    body.get("draft_id"), body.get("accepted", []), extraction_confirmed=body.get("extraction_confirmed") is True)
+                return self._json(200, result)
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
         if path.startswith("/api/bank"):
             return self._bank(path, body, uid)
         if path == "/api/resume/build":

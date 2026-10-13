@@ -10,6 +10,7 @@ import {
   norm,
   pctText,
   saveAnswer as saveAnswerRow,
+  skipExplanation,
   supabase,
   tailoredPdfUrl,
 } from "./lib";
@@ -104,7 +105,7 @@ export default function Drawer({ id, onClose, onChanged }: Props) {
                 </a>
               )}
             </div>
-            {job.status_reason && <div className="banner warn">{job.status_reason}</div>}
+            {job.status === "skipped" ? <div className="banner warn"><b>Why Appli skipped this job</b><p>{skipExplanation(job.status_reason)}</p>{job.status_reason && <details><summary>Screening evidence</summary>{job.status_reason}</details>}</div> : job.status_reason && <div className="banner warn">{job.status_reason}</div>}
 
             <div className="d-actions">
               <button className="btn primary" disabled={busy} onClick={() => setStatus("submitted")}>
