@@ -120,7 +120,27 @@ export type AgentStatus = {
   stopping: boolean;
   progress: { current: number; total: number; label: string };
   log: string[];
+  activity?: { current: ActivityEvent | null; events: ActivityEvent[] };
 };
+
+export type ActivityEvent = {
+  stage: string;
+  message: string;
+  at: string;
+  background: boolean;
+  job_id?: number;
+  company?: string;
+  role?: string;
+};
+
+/** Explain both the posting restriction and why it triggers this person's screening settings. */
+export function skipExplanation(reason: string | null): string {
+  if (reason?.startsWith("No visa sponsorship")) return "The posting rules out visa sponsorship, and your profile says you need it.";
+  if (reason?.startsWith("Security clearance required")) return "The posting requires security clearance, and your profile is set to skip jobs requiring it.";
+  if (reason?.startsWith("US citizenship required")) return "The posting requires US citizenship or US-person eligibility that your profile does not indicate.";
+  if (reason?.startsWith("Posting closed")) return "The posting appears to be closed or no longer available.";
+  return reason || "This job was skipped. Open its details to review the screening decision.";
+}
 
 /** Must match runner/answering.py norm(): lowercase, collapse spaces, strip non [a-z0-9 ]. */
 export const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").replace(/[^a-z0-9 ]/g, "").trim();
@@ -281,6 +301,8 @@ export type ResumeProblem = {
 };
 export type ResumeEdits = {
   mode?: "skills";
+  format?: "tex" | "docx" | "pdf_rebuild";
+  extracted_text?: string;
   base: string;
   pct_before: number;
   pct_after: number;

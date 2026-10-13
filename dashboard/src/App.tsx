@@ -11,6 +11,8 @@ import FilesView from "./Files";
 import Onboarding from "./Onboarding";
 import FindJobs from "./FindJobs";
 import BankView from "./BankView";
+import LiveProgress from "./LiveProgress";
+import ResumeStudio from "./ResumeStudio";
 import { IconBookmark, IconCheck, IconDoc, IconFolder, IconList, IconLogout, IconMoon, IconSearch, IconSun, IconTarget, IconUser, Logo } from "./Icons";
 import { useTheme } from "./theme";
 
@@ -22,7 +24,7 @@ const initials = (s: string) =>
     .map((w) => w[0]?.toUpperCase())
     .join("");
 
-type Tab = "jobs" | "find" | "applied" | "resume" | "bank" | "answers" | "profile" | "files";
+type Tab = "jobs" | "find" | "applied" | "resume" | "studio" | "bank" | "answers" | "profile" | "files";
 
 export default function App() {
   const [session, setSession] = useState<Session | null | undefined>(undefined);
@@ -170,6 +172,7 @@ export default function App() {
               {nav("find", <IconSearch />, "Find jobs")}
               {nav("applied", <IconCheck />, "Applied", applied !== null ? <span className="count">{applied}</span> : null)}
               <div className="nav-label">Improve</div>
+              {nav("studio", <IconDoc />, "Tailor resume")}
               {nav("resume", <IconDoc />, "Resume review", pendingResumes ? <span className="count warn-count">{pendingResumes}</span> : null)}
               {nav("bank", <IconTarget />, "Experience bank")}
               {nav("answers", <IconBookmark />, "Saved answers")}
@@ -202,6 +205,8 @@ export default function App() {
       </aside>
       <main className="main">
         {banners}
+        {!setup && <LiveProgress key={userId} ownerId={session.user.id} onResume={() => setTab("resume")} onApplications={() => setTab("jobs")} />}
+        {!setup && <div hidden={tab !== "studio"}><ResumeStudio key={userId} /></div>}
         {setup ? (
           <Onboarding
             me={me}
@@ -222,6 +227,8 @@ export default function App() {
           <JobsView onOpenApplied={() => setTab("applied")} />
         ) : tab === "applied" ? (
           <AppliedView />
+        ) : tab === "studio" ? (
+          null
         ) : tab === "resume" ? (
           <ResumeReview />
         ) : tab === "bank" ? (

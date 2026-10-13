@@ -6,3 +6,5 @@ python-dotenv
 pypdf
 httpx
 python-docx
+reportlab
+pymupdf

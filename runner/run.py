@@ -25,6 +25,7 @@ from . import known as known_mod
 from . import profile_md
 from . import workday
 from .answering import answer_fields, direct_answer, norm
+from .activity import report
 from .ats import SUPPORTED, adapters
 from .config import ROOT
 from .db import dedupe_jobs, require_multi_user, sb, user_id
@@ -221,6 +222,7 @@ def _fill_pass(page, pw, fields, state, profile, bank, job, resume, resume_path,
     """Answer and fill `fields`; returns (filled, unanswered, uploads)."""
     # Only open dropdowns whose answer isn't already known from the profile (opening each one costs time).
     step = Steps()
+    report("answering", "Reading form fields and preparing answers from your profile and saved answers.", job)
     # Every dropdown's options are read first (big search lists like country / school / city come back empty and are
     # typed into), so an answer is always one of the choices: a "start date" rule never answers a Yes / No dropdown.
     need_options = [f for f in fields if f.type == "combobox" and not f.options]
@@ -230,6 +232,7 @@ def _fill_pass(page, pw, fields, state, profile, bank, job, resume, resume_path,
     cover_text = [f for f in fields if f.type in ("textarea", "text") and re.search(r"cover letter", f.label, re.I)]
     letter_future = None
     if (cover_fields or cover_text) and "letter" not in state:
+        report("answering", "Drafting a cover letter while preparing the rest of your answers.", job)
         state["letter"] = None
         letter_future = _BG.submit(cover_letter.generate, profile, resume, job)  # drafted while the rest is answered
 
@@ -268,6 +271,7 @@ def _fill_pass(page, pw, fields, state, profile, bank, job, resume, resume_path,
             )
 
     step(f"typed {len(filled)} answer(s) into the page")
+    report("uploading", "Filling answers and attaching the required documents.", job)
     for f in fields:
         kind = forms.kind_of_file(f)
         if kind == "resume" and state.get("resume_uploaded"):
@@ -324,6 +328,8 @@ def _draft_tailoring(jid: int, job: dict, info: dict, profile: Profile):
     """Background: draft the tailored resume, then hand the job to Resume review (or back to the queue).
     With an experience bank, a whole resume is built for the job (planned, written, reviewed by a second model);
     without one (or without LaTeX), missing skills are added to the best base resume."""
+    report("tailoring", "Drafting a resume from your experience bank." if info.get("use_bank") else
+           "Drafting changes backed by your resumes and profile.", job, background=True)
     if info.get("use_bank"):
         from .resume import bankbuild
 
@@ -333,12 +339,14 @@ def _draft_tailoring(jid: int, job: dict, info: dict, profile: Profile):
                    status_reason=f"Resume built from your experience bank ({r['pages']} page{'s' if r['pages'] > 1 else ''}, "
                                  f"match {(r['pct_before'] or 0):.0%} -> {(r['pct_after'] or 0):.0%}): review it")
             print(f"    job {jid}: bank resume ready for review ({r['pages']} page(s), {len(r['dropped'])} bullet(s) dropped by checks)")
+            report("resume_review", "Your resume draft is ready. Open Resume review to approve it.", job, background=True)
             return
         except Exception as e:
             print(f"    job {jid}: bank resume failed ({type(e).__name__}: {str(e)[:100]}) - trying skills-only tailoring")
             if not info.get("tailorable", True):
                 update(jid, status="queued", resume_review="dismissed", resume_edits={"dismissed_for": resume_select.resume_version()},
                        status_reason=f"Building from the bank failed ({str(e)[:120] or type(e).__name__}); will use the best base resume")
+                report("queued", "Resume drafting failed. The job is queued to use your best base resume.", job, background=True)
                 return
     profile_text = profile.text
     try:
@@ -348,15 +356,18 @@ def _draft_tailoring(jid: int, job: dict, info: dict, profile: Profile):
                    status_reason=f"Tailored draft ready: {result['pct_before']:.0%} -> {result['pct_after']:.0%}, review it")
             print(f"    job {jid}: tailored draft ready ({result['pct_before']:.0%} -> {result['pct_after']:.0%}, "
                   f"{len(result['edits'])} edit(s))")
+            report("resume_review", f"Draft ready: {result['pct_before']:.0%} to {result['pct_after']:.0%} match. Review and build it in Resume review.", job, background=True)
         else:  # nothing safe to change: fill with the best base resume on the next run
             update(jid, status="queued", resume_edits={**result, "dismissed_for": resume_select.resume_version()},
                    resume_review="dismissed",
                    status_reason="Tailoring found no safe edits; will use the best base resume")
             print(f"    job {jid}: no safe tailoring edits - back in the queue with the base resume")
+            report("queued", "No supported changes were found. Queued to use your best base resume.", job, background=True)
     except Exception as e:
         update(jid, status="queued", resume_review="dismissed", resume_edits={"dismissed_for": resume_select.resume_version()},
                status_reason=f"Tailoring failed ({type(e).__name__}); will use the best base resume")
         print(f"    job {jid}: tailoring failed: {type(e).__name__}: {str(e)[:100]}")
+        report("queued", "Resume drafting failed. Queued to use your best base resume; see the job for details.", job, background=True)
 
 
 def _has_latex() -> bool:
@@ -418,6 +429,8 @@ def _choose_resume(job: dict, profile: Profile) -> tuple[str, Path, dict | None,
           + ((" -> building a resume for this job from your experience bank" if info.get("use_bank") else
               f" -> tailoring ({len(info['addable'])} missing skill(s) to add)") if action == "tailor" else "")
           + (f"\n    {why}" if why else ""))
+    if why:
+        report("matching", f"Best match: {info['pct']:.0%}. {why.removeprefix('not tailoring: ').capitalize()}. Using the base resume.", job)
     return key, config.RESUMES[key], info, action
 
 
@@ -435,6 +448,7 @@ def process(pw, ctx, job: dict, profile: Profile, bank: dict[str, str], known: l
 
     def give_up(status: str, reason: str):
         update(jid, status=status, status_reason=reason)
+        report(status, reason, job)
         print(f"    {status}: {reason[:110]}")
         try:
             page.close()
@@ -454,6 +468,7 @@ def process(pw, ctx, job: dict, profile: Profile, bank: dict[str, str], known: l
         text = page.inner_text("body")
         step("posting page loaded")
         active = active_screens(profile.standard_answers)
+        report("screening", "Checking the posting for sponsorship, citizenship and clearance requirements.", job)
         reason = screen(text, active)
         if not reason:
             try:
@@ -467,17 +482,21 @@ def process(pw, ctx, job: dict, profile: Profile, bank: dict[str, str], known: l
 
         # Decide the resume before touching the form: under the threshold with honest additions available, the job
         # pauses in "tailoring" (no daily slot used) and is filled with the tailored PDF once Rishi builds it.
+        report("matching", "Scanning your resumes and comparing their skills with this job.", job)
         key, resume_path, match_info, action = _choose_resume(job, profile)
         step("resume chosen")
         if match_info:
             _save_match(jid, match_info)
         if action == "tailor":
+            report("tailoring", f"Best match is {match_info['pct']:.0%}, below the {config.RESUME_MATCH_THRESHOLD:.0%} target. Drafting a tailored resume; this application waits for your approval.", job)
             update(jid, status="tailoring", resume_review=None,
                    status_reason=f"Best resume matches {match_info['pct']:.0%}: drafting a tailored version")
             pending_drafts.append(_BG.submit(_draft_tailoring, jid, job, match_info, profile))
             page.close()
             return None
 
+        report("filling", (f"Using your {match_info['pct']:.0%} match resume. " if match_info else "Using your selected resume. ") +
+               "Opening the form, attaching documents and preparing answers from your profile.", job)
         if ats == "workday":
             return _start_workday(page, job, profile, bank, known, key, resume_path, give_up)
 
@@ -595,6 +614,9 @@ def process(pw, ctx, job: dict, profile: Profile, bank: dict[str, str], known: l
             unanswered=unanswered,
         )
         tiers = Counter(f["tier"] for f in filled)
+        report("needs_help" if needs else "ready_for_review",
+               f"{len(needs)} required question(s) need your answers. Open Applications to help." if needs else
+               "Form filled. Review the open browser tab and submit it yourself.", job)
         print(f"    ready: {len(filled)} filled ({', '.join(f'{v} {k}' for k, v in tiers.items())}), "
               f"{len(needs)} required left for you, uploads={uploads}")
         try:
@@ -686,6 +708,7 @@ def _workday_step(t: "workday.Tracked") -> str:
     if r == "submitted":
         update(jid, status="submitted", status_reason=None)
         print(f"    job {jid}: Workday submission detected - marked submitted")
+        report("submitted", "Submission detected and recorded in Applied.", t.job, background=True)
     return r
 
 
@@ -777,6 +800,7 @@ def poll_review(tracked: dict[int, Page]):
         if CONFIRM.search(text[:4000]):
             update(jid, status="submitted", status_reason=None)
             print(f"    job {jid}: submission detected - marked submitted")
+            report("submitted", "Submission detected and recorded in Applied.", {"id": jid}, background=True)
             del tracked[jid]
 
 
@@ -825,6 +849,7 @@ def review_loop(ctx: BrowserContext, tracked: dict[int, Page], wd: dict[int, "wo
 # ---- entry point ----------------------------------------------------------------------------
 def run(limit: int = 20, ids: list[int] | None = None):
     acquire_lock()
+    report("starting", "Loading your profile, resumes and saved answers for this batch.")
     tracked: dict[int, Page] = {}
     wd: dict[int, workday.Tracked] = {}  # Workday applications waiting for you to click Save and Continue
     try:
@@ -874,6 +899,7 @@ def run(limit: int = 20, ids: list[int] | None = None):
                     """Fill one job; True if a form is now open for you."""
                     db_fresh()  # long runs outlive one access token
                     print(f"{label} {job['company']} - {job['role']} ({job['ats']})")
+                    report("opening", "Opening the job posting.", job)
                     update(job["id"], run_id=run_row["id"])
                     t0, c0, j0 = time.time(), llm.usage.seconds, llm.usage.jev_seconds
                     page = process(pw, ctx, job, profile, bank, known, pending_drafts)
@@ -883,6 +909,12 @@ def run(limit: int = 20, ids: list[int] | None = None):
                           f"browser + other {max(0, took - chat - jv):.0f}s"
                           + ("  (chat calls overlapped)" if chat + jv > took else ""))
                     st = status_of(job["id"]) or "?"
+                    if st in ("failed", "queued", "needs_manual", "needs_help", "submission_required"):
+                        report(st, {"failed": "Could not finish this application. Open the job for the error and retry options.",
+                                    "queued": "Application returned to the queue for another attempt.",
+                                    "needs_manual": "This application needs manual attention. Open the job for details.",
+                                    "needs_help": "Required questions need your answers. Open Applications to continue.",
+                                    "submission_required": "The browser is waiting for your next action. Check the application tab."}[st], job)
                     counts[st] = counts.get(st, 0) + 1
                     if st == "tailoring":
                         paused.add(job["id"])  # comes back into this run once you decide in Resume review
@@ -895,6 +927,7 @@ def run(limit: int = 20, ids: list[int] | None = None):
                 def fill_resumed(job: dict):
                     print(f"\n[resumed] {'tailored resume built' if job.get('resume_review') == 'built' else 'using the base resume'}")
                     fill_one(job, "[resumed]")
+                    report("review", "Approved resume processed. Review the application tab or check Applications for any questions.")
 
                 while filled_n < total and len(attempted) < max(total * 4, 10):
                     if STOP.exists():
@@ -918,6 +951,7 @@ def run(limit: int = 20, ids: list[int] | None = None):
                     for fut in pending_drafts:
                         fut.result()
                 print("\nDone:", counts)
+                report("review", "Batch preparation finished. Review any resume drafts and open application tabs; submit forms yourself.")
                 print(calllog.summary())
                 print(f"LLM usage: {llm.usage.calls} chat calls, {llm.usage.prompt_tokens} in / {llm.usage.completion_tokens} "
                       f"out tokens, {llm.usage.retries} retries, {llm.usage.invalid_json} invalid-JSON | "

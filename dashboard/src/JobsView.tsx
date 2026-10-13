@@ -12,6 +12,7 @@ import {
   matchTone,
   pctText,
   timeAgo,
+  skipExplanation,
 } from "./lib";
 import RunCard, { getGoal } from "./RunCard";
 
@@ -69,6 +70,7 @@ export function JobItem({ j, selected, onClick }: { j: Job; selected: boolean; o
       <div className="who">
         <div className="company">{j.company}</div>
         <div className="role">{j.role}</div>
+        {j.status === "skipped" && <div className="skip-row-reason">{skipExplanation(j.status_reason)}</div>}
       </div>
       <div className="meta">
         <span className={`matchpill ${matchTone(j.match_pct)}`} title="Best resume's match with the posting">

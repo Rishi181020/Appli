@@ -39,7 +39,7 @@ def file_stem(role: str | None) -> str:
     return f"{first} Resume {role_title(role)}"
 
 
-def build(job: dict, accepted: list[str]) -> dict:
+def build(job: dict, accepted: list[str], *, persist: bool = True, output_dir=None, allow_unchanged: bool = False) -> dict:
     """Add the ticked skills to the base .tex, compile, save, record. Never raises for expected failures."""
     edits = job.get("resume_edits") or {}
     info = job.get("resume_match") or {}
@@ -48,7 +48,7 @@ def build(job: dict, accepted: list[str]) -> dict:
     if not key or key not in (config.RESUME_DOCX if is_docx else config.RESUME_TEX):
         return {"ok": False, "error": "No tailoring suggestion for this job."}
     chosen = [e for e in edits.get("edits", []) if e["id"] in set(accepted)]
-    if not chosen:
+    if not chosen and not allow_unchanged:
         return {"ok": False, "error": "Tick at least one skill to build a tailored resume."}
 
     if is_docx:
@@ -79,7 +79,7 @@ def build(job: dict, accepted: list[str]) -> dict:
              else {"pct": None, "missing": []})
     added = [e["skill"] if "skill" in e else e["keywords_added"][0] for e in chosen]
 
-    folder = config.TAILORED_DIR / str(job["id"])
+    folder = output_dir if output_dir is not None else config.TAILORED_DIR / str(job["id"])
     folder.mkdir(parents=True, exist_ok=True)
     for old in folder.glob("*"):  # a rebuild replaces the previous version (the role name may have changed)
         old.unlink()
@@ -111,6 +111,8 @@ def build(job: dict, accepted: list[str]) -> dict:
 
     edits_out = {**edits, "built_for": resume_version(),
                  "built": {k: result[k] for k in ("pct_after", "added_words", "removed_words", "accepted", "file")}}
+    if not persist:
+        return result
     try:
         sb().table("jobs").update(
             {"resume_file": result["file"], "resume_review": "built", "resume_edits": json.loads(json.dumps(edits_out))}

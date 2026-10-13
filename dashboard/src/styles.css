@@ -2,6 +2,41 @@
    Light-first, mint brand (fresh, optimistic) on a soft grey canvas, near-black ink, pill buttons, white cards.
    Tokens: primitives -> semantic (used everywhere below). Dark theme redefines the semantic layer. */
 
+.live-progress { padding: 20px; margin-bottom: 24px; }
+.live-progress-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
+.live-progress h3 { margin: 8px 0; }
+.live-progress p { margin: 8px 0; }
+.live-progress-actions { display: grid; gap: 10px; }
+.progress-action { display: flex; align-items: center; gap: 12px; padding: 12px; background: var(--panel2); border-radius: var(--radius-sm); }
+.progress-action > span:not(.spinner) { flex: 1; }
+.progress-action small { display: block; color: var(--muted); margin-top: 4px; }
+.progress-history { margin-top: 14px; font-size: 13px; }
+.progress-history summary { cursor: pointer; color: var(--muted); }
+.progress-history ol { list-style: none; padding: 0; margin: 10px 0 0; display: grid; gap: 8px; }
+.progress-history li { display: flex; gap: 12px; }
+.progress-history time { color: var(--muted); flex-shrink: 0; }
+.skip-notices { border: 1px solid var(--warn); background: var(--panel2); border-radius: var(--radius-sm); padding: 14px; }
+.skip-notice { display: flex; justify-content: space-between; gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--border); }
+.skip-notice:last-child { border-bottom: 0; padding-bottom: 0; }
+.skip-notice p { font-size: 13px; }
+.skip-notice small, .skip-notice summary { color: var(--muted); font-size: 12px; }
+.skip-notice summary { cursor: pointer; }
+.skip-notice-actions { display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start; flex-shrink: 0; max-width: 260px; }
+.skip-row-reason { font-size: 12px; color: var(--warn); margin-top: 4px; white-space: normal; }
+.studio-input, .studio-result { padding: 24px; margin-bottom: 20px; }
+.studio-input > .pf-field { margin: 18px 0; }
+.studio-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.studio-edit { display: flex; gap: 12px; padding: 16px 0; border-top: 1px solid var(--border); }
+.studio-edit input { flex: none; margin-top: 5px; }
+.studio-edit small { color: var(--muted); }
+.studio-edit p { margin: 6px 0; }
+.studio-result h2 { margin-top: 0; }
+.studio-pdf-review { padding: 16px; margin: 18px 0; background: var(--panel2); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.studio-pdf-review textarea { width: 100%; resize: vertical; font-size: 13px; line-height: 1.6; }
+@media (max-width: 640px) { .studio-fields { grid-template-columns: 1fr; } }
+@media (max-width: 640px) { .skip-notice { flex-direction: column; } .skip-notice-actions { max-width: none; } }
+@media (max-width: 640px) { .live-progress-head, .progress-action { flex-wrap: wrap; } .progress-action .btn { width: 100%; } }
+
 :root {
   /* primitives */
   --mint-50: #effff8;
