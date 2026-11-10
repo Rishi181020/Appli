@@ -115,7 +115,30 @@ export const matchTone = (p: number | null | undefined) =>
   p == null ? "none" : p >= MATCH_TARGET ? "good" : p >= 0.6 ? "mid" : "low";
 export const pctText = (p: number | null | undefined) => (p == null ? "–" : `${Math.round(p * 100)}%`);
 
+/** Jobright-style bands for the overall (four-part) match: up to 70% fair, up to 85% good, above that strong. */
+export type Band = "none" | "weak" | "good" | "strong";
+export const matchBand = (p: number | null | undefined): Band => (p == null ? "none" : p <= 0.7 ? "weak" : p <= 0.85 ? "good" : "strong");
+export const BAND_LABEL: Record<Band, string> = { none: "Not scored", weak: "Fair match", good: "Good match", strong: "Strong match" };
+export type Breakdown = {
+  pct: number;
+  band: Band;
+  parts: { skills: number; seniority: number; education: number; industry: number };
+  reasons: string[];
+  yoe: number;
+};
+export type Quals = {
+  seniority: string | null;
+  min_yoe: number | null;
+  education: { level: string; fields: string[] };
+  industry: string[];
+  work_model: string | null;
+  company_size: string | null;
+  soft_skills: string[];
+};
+
+export type Digest = { at: string; count: number; jobs: { key: string; company: string; title: string }[] };
 export type AgentStatus = {
+  digest?: Digest | null;
   running: boolean;
   stopping: boolean;
   progress: { current: number; total: number; label: string };
@@ -192,6 +215,36 @@ export async function agent<T = unknown>(path: string, body?: unknown): Promise<
   return json as T;
 }
 
+/** POST to the local server and read its server-sent events (one JSON object each) as they arrive. Abort the
+ * signal to stop: the server stops the model too. */
+export async function agentStream<E>(path: string, body: unknown, onEvent: (e: E) => void, signal: AbortSignal): Promise<void> {
+  const { data } = await supabase.auth.getSession();
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Appli": "1", Authorization: `Bearer ${data.session?.access_token ?? ""}` },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok || !res.body) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error((json as { error?: string }).error ?? `HTTP ${res.status}`);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let at: number;
+    while ((at = buf.indexOf("\n\n")) >= 0) {
+      const chunk = buf.slice(0, at);
+      buf = buf.slice(at + 2);
+      if (chunk.startsWith("data: ")) onEvent(JSON.parse(chunk.slice(6)) as E);
+    }
+  }
+}
+
 /** A tailored resume PDF from this computer (opens in a new tab). */
 export const tailoredPdfUrl = (jobId: number) => `/api/resume/${jobId}.pdf?token=${encodeURIComponent(currentToken)}`;
 
@@ -253,7 +306,7 @@ export function hue(name: string): number {
 export const ACTIVE_STATUSES: Status[] = STATUSES.filter((s) => s !== "submitted");
 
 export const LIST_COLUMNS =
-  "id,company,role,location,url,fit_tier,days_posted,ats,status,status_reason,resume_used,attempts,updated_at,unanswered";
+  "id,company,role,location,url,fit_tier,days_posted,ats,status,status_reason,resume_used,attempts,updated_at,unanswered,source";
 
 // ---- resume tailoring ----
 export type ResumeScore = { pct: number; matched: string[]; missing: string[] };
@@ -271,6 +324,8 @@ export type ResumeMatch = {
   stuffed?: string[];
   pct: number;
   missing: string[];
+  quals?: Quals;
+  breakdown?: Breakdown | null;
 };
 export type ResumeEdit = {
   id: string;

@@ -205,7 +205,7 @@ export default function App() {
       </aside>
       <main className="main">
         {banners}
-        {!setup && <LiveProgress key={userId} ownerId={session.user.id} onResume={() => setTab("resume")} onApplications={() => setTab("jobs")} />}
+        {!setup && <LiveProgress key={userId} ownerId={session.user.id} onResume={() => setTab("resume")} onApplications={() => setTab("jobs")} onFind={() => setTab("find")} />}
         {!setup && <div hidden={tab !== "studio"}><ResumeStudio key={userId} /></div>}
         {setup ? (
           <Onboarding

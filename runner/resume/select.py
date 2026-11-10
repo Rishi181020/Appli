@@ -149,6 +149,15 @@ def choose(job: dict, terms: list[dict], scores: dict[str, dict]) -> tuple[str, 
     return best, "score", conf
 
 
+def _breakdown(text: str, terms: list[dict], quals: dict, semantic: set[str]) -> dict | None:
+    """The four-part match for the chosen resume; None when there's no profile to compare against."""
+    from ..profile import load_profile
+
+    if not (config.PROFILE_PATH and config.PROFILE_PATH.exists()):
+        return None
+    return match.breakdown(load_profile(config.PROFILE_PATH, config.PRIMARY_TEX), text, terms, quals, semantic)
+
+
 def evaluate(job: dict, use_jev: bool = True) -> dict | None:
     """Match info for a job, or None when there is no usable posting text / no resume source.
     use_jev=False: exact keyword coverage only (no equivalents check, best coverage picks the resume)."""
@@ -156,7 +165,9 @@ def evaluate(job: dict, use_jev: bool = True) -> dict | None:
     docs = base_docs()
     if len(desc) < 300 or not docs:
         return None
-    terms = match.extract_terms(desc, job.get("role"), job.get("company"))
+    extracted = match.extract(desc, job.get("role"), job.get("company"),
+                              cache_dir=config.HOME / "postings" if config.HOME else None)
+    terms, quals = extracted["terms"], extracted["quals"]
     if len(terms) < 4:
         return None
     equiv = jev_equivalents(docs, terms, job.get("id")) if use_jev else {k: set() for k in docs}
@@ -165,6 +176,8 @@ def evaluate(job: dict, use_jev: bool = True) -> dict | None:
     s = scores[chosen]
     return {
         "terms": terms,
+        "quals": quals,
+        "breakdown": _breakdown(docs[chosen]["text"], terms, quals, equiv[chosen]),
         "scores": {k: {**v, "pct": round(v["pct"], 4), "exact_pct": round(v["exact_pct"], 4)} for k, v in scores.items()},
         "chosen": chosen,
         "chosen_by": by,

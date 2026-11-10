@@ -42,7 +42,7 @@ job = {"role": "Software Engineer", "company": "Acme"}
 bank = {}
 res = answering.answer_fields(fields, profile, bank, job, "resume text", use_jev=False)
 
-assert res.values["first"] == "Rishi" and res.tiers["first"] == "direct"
+assert res.values["first"] == "Rishi Rugweda" and res.tiers["first"] == "direct"
 assert res.values["email"] == profile.email
 assert res.values["auth"] == "Yes" and res.tiers["auth"] == "direct"
 assert res.values["spons"] == "Yes" and res.tiers["spons"] == "direct"  # candidate needs sponsorship

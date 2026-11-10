@@ -24,6 +24,9 @@ import Activity from "./Activity";
 import MultiSelect from "./MultiSelect";
 import { IconChevron, IconPlay, IconRefresh, IconSearch } from "./Icons";
 
+// jobs added from SimplifyJobs' lists on Find jobs (runner/jobsearch.py to_rows: "Find jobs: New-grad list")
+const SIMPLIFY = "simplify";
+const fromSimplify = (j: Job) => /^Find jobs: (New-grad|Internship) list/.test(j.source ?? "");
 const sameDay = (iso: string) => new Date(iso).toDateString() === new Date().toDateString();
 
 export function Avatar({ name, size = 34 }: { name: string; size?: number }) {
@@ -180,7 +183,11 @@ export default function JobsView({ onOpenApplied }: { onOpenApplied: () => void 
   const siteOptions = useMemo(() => {
     const c: Record<string, number> = {};
     listed.forEach((j) => (c[j.ats ?? "none"] = (c[j.ats ?? "none"] ?? 0) + 1));
-    return Object.keys(c).sort().map((a) => ({ value: a, label: a === "none" ? "No link" : a, count: c[a] }));
+    const simplify = listed.filter(fromSimplify).length;
+    return [
+      ...(simplify ? [{ value: SIMPLIFY, label: "Simplify (new-grad / intern lists)", count: simplify }] : []),
+      ...Object.keys(c).sort().map((a) => ({ value: a, label: a === "none" ? "No link" : a, count: c[a] })),
+    ];
   }, [listed]);
   const tierOptions = useMemo(() => {
     const c: Record<string, number> = {};
@@ -216,6 +223,11 @@ export default function JobsView({ onOpenApplied }: { onOpenApplied: () => void 
     return m.length ? m.reduce((a, b) => a + b, 0) / m.length : null;
   }, [jobs]);
 
+  // Simplify narrows the sites ticked with it: Simplify + ashby + greenhouse = Simplify jobs on Ashby or Greenhouse only
+  const siteOk = (j: Job) => {
+    const ats = sites.filter((s) => s !== SIMPLIFY);
+    return (!sites.includes(SIMPLIFY) || fromSimplify(j)) && (!ats.length || ats.includes(j.ats ?? "none"));
+  };
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase();
     const out = jobs.filter(
@@ -223,7 +235,7 @@ export default function JobsView({ onOpenApplied }: { onOpenApplied: () => void 
         j.status !== "submitted" && // applied jobs live on the Applied tab
         (statuses.length ? statuses.includes(j.status) : j.status !== "skipped") && // skipped only when picked
         (!tiers.length || tiers.includes(String(j.fit_tier ?? "none"))) &&
-        (!sites.length || sites.includes(j.ats ?? "none")) &&
+        siteOk(j) &&
         (!matches.length || matches.includes(matchOf(j))) &&
         (!needle || `${j.company} ${j.role ?? ""}`.toLowerCase().includes(needle))
     );

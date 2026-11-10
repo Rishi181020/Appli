@@ -13,7 +13,7 @@ type Preview = {
   sheet?: string | null;
   problems?: string[];
 };
-type Result = { inserted: number; already_present: number; duplicates_skipped?: number };
+type Result = { inserted: number; already_present: number; duplicates_skipped?: number; scoring?: boolean };
 
 const FIELDS: { key: string; label: string; required?: boolean }[] = [
   { key: "company", label: "Company", required: true },
@@ -60,7 +60,7 @@ export default function AddJobs({ onDone, onClose }: { onDone?: (r: Result) => v
       const r = await agent<Result>("/api/jobs/import", body());
       setMsg({
         ok: true,
-        text: `Added ${r.inserted} job(s)${r.already_present ? `, ${r.already_present} were already in your list` : ""}.`,
+        text: `Added ${r.inserted} job(s)${r.already_present ? `, ${r.already_present} were already in your list` : ""}.${r.scoring ? " Scoring them against your resumes in the background: their match % appears in a few minutes." : ""}`,
       });
       setPreview(null);
       setLinks("");

@@ -153,6 +153,30 @@ def screen_status(owner_id: str) -> dict:
             "done": next((ln for ln in reversed(lines) if ln.startswith("Done:")), "")}
 
 
+def _digest(owner_id: str) -> dict | None:
+    """The latest search's new strong matches (the daily digest), read without switching the active person."""
+    from .userconfig import folder_for
+
+    folder = folder_for(owner_id)
+    try:
+        return json.loads((folder / "found.json").read_text(encoding="utf-8")).get("digest") if folder else None
+    except (OSError, ValueError):
+        return None
+
+
+def _score_new(owner_id: str | None, ids: list[int]) -> bool:
+    """Score just-imported jobs against the resumes in the background, so the queue shows their match % at once.
+    False when there's nothing to score or a scoring is already running (those jobs are scored when a run opens them)."""
+    if not (owner_id and ids):
+        return False
+    OUT.mkdir(exist_ok=True)
+    f = OUT / f"score-ids-{owner_id}.txt"
+    f.write_text(",".join(map(str, ids)), encoding="utf-8")
+    code, _ = start_task("score", owner_id, ["rescore", "--ids-file", str(f), "--unscored", "--limit", "100000"],
+                         "Scoring new jobs")
+    return code == 200
+
+
 def _tee(proc: subprocess.Popen):
     """Copy the runner's output to this terminal (live) and to out/run.log (for the dashboard's Activity panel)."""
     with open(LOG, "w", encoding="utf-8") as logf:
@@ -300,7 +324,7 @@ class Handler(BaseHTTPRequestHandler):
                                   "wordprocessingml.document", download=files[-1].name)
             return self._send(200, files[-1].read_bytes(), "application/pdf")
         if path == "/api/status":
-            return self._json(200, status(uid))
+            return self._json(200, {**status(uid), "digest": _digest(uid)})
         if path == "/api/me":
             with db.as_user(user["token"], uid):
                 try:
@@ -418,7 +442,14 @@ class Handler(BaseHTTPRequestHandler):
             profile = load_profile(config.PROFILE_PATH, config.PRIMARY_TEX)
             return self._json(200, {"titles": jobsearch.suggest_titles(profile.text)})
         if path == "/api/find/add":
-            return self._find_add(body)
+            return self._find_add(body, uid)
+        if path == "/api/find/feedback":
+            from . import jobsearch
+
+            try:
+                return self._json(200, {"found": jobsearch.set_feedback(str(body.get("key", "")), str(body.get("action", "")))})
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
         if path == "/api/stop":
             if not running_pid() or _run_owner() not in (None, uid):
                 return self._json(200, {"stopped": False})
@@ -471,18 +502,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/jobs/preview":
             return self._jobs(body, save=False)
         if path == "/api/jobs/import":
-            return self._jobs(body, save=True)
+            return self._jobs(body, save=True, uid=uid)
 
         # ---- resume tailoring
-        if path in ("/api/resume-studio/analyze", "/api/resume-studio/build"):
-            from .resume import manual
-
-            try:
-                result = manual.analyze(body) if path.endswith("/analyze") else manual.export(
-                    body.get("draft_id"), body.get("accepted", []), extraction_confirmed=body.get("extraction_confirmed") is True)
-                return self._json(200, result)
-            except ValueError as e:
-                return self._json(400, {"error": str(e)})
+        if path.startswith("/api/resume-studio/"):
+            return self._studio(path.rsplit("/", 1)[1], body)
         if path.startswith("/api/bank"):
             return self._bank(path, body, uid)
         if path == "/api/resume/build":
@@ -490,6 +514,86 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/resume/dismiss":
             return self._resume_dismiss(body)
         return self._json(404, {"error": "not found"})
+
+    def _studio(self, action: str, body: dict):
+        """Tailor resume: analyze a pasted posting, pick keywords, generate, compare / edit / chat, versions, style."""
+        from .resume import manual, studio
+
+        d = body.get("draft_id")
+        if action == "chat":
+            return self._studio_chat(body)
+        actions = {
+            "analyze": lambda: studio.analyze(body),
+            "build": lambda: manual.export(d, body.get("accepted", []), extraction_confirmed=body.get("extraction_confirmed") is True),
+            "open": lambda: studio.open_draft(d),
+            "drafts": lambda: {"drafts": studio.drafts(), "jobs": self._job_versions()},
+            "generate": lambda: studio.generate(d, body.get("targets") or [], body.get("extraction_confirmed") is True),
+            "change": lambda: studio.change(d, str(body.get("bid", "")), str(body.get("action", "")), body.get("text")),
+            "verify": lambda: studio.answer(d, str(body.get("card", "")), str(body.get("answer", ""))),
+            "prompt": lambda: (studio.set_prompt(body.get("prompt")), {"ok": True})[1],
+            "style": lambda: studio.set_style(body.get("style") or {}, d),
+            "version": lambda: studio.save_version(d),
+            "restore": lambda: studio.restore(d, str(body.get("version", ""))),
+            "restore-job": lambda: self._restore_job(body),
+            "diagnose": lambda: studio.diagnose(d),
+        }
+        if action not in actions:
+            return self._json(404, {"error": "not found"})
+        try:
+            return self._json(200, actions[action]())
+        except ValueError as e:  # bank.BankError too
+            return self._json(400, {"error": str(e)})
+
+    def _job_versions(self) -> list[dict]:
+        from .resume import studio
+
+        jobs = studio.job_versions()
+        if jobs:
+            rows = db.sb().table("jobs").select("id,company,role").in_("id", [j["job_id"] for j in jobs]).execute().data
+            names = {r["id"]: r for r in rows}
+            jobs = [{**j, "company": names[j["job_id"]]["company"], "role": names[j["job_id"]]["role"]}
+                    for j in jobs if j["job_id"] in names]
+        return jobs
+
+    def _restore_job(self, body: dict) -> dict:
+        from .resume import studio
+
+        job_id = int(body.get("job_id") or 0)
+        if not db.sb().table("jobs").select("id").eq("id", job_id).execute().data:
+            raise ValueError("job not found")
+        file = studio.restore_job(job_id, str(body.get("version", "")))
+        db.sb().table("jobs").update({"resume_file": file}).eq("id", job_id).execute()
+        return {"ok": True, "file": file, "jobs": self._job_versions()}
+
+    def _studio_chat(self, body: dict):
+        """The chat streams: server-sent events, one JSON object each. Closing the request (Stop) ends it."""
+        import itertools
+
+        from .resume import studio
+
+        events = studio.chat(body.get("draft_id"), body.get("message"), body.get("bid") or None, body.get("facts") is True)
+        try:
+            first = next(events)  # checks the request (and starts the model) before the stream opens
+        except ValueError as e:
+            events.close()
+            return self._json(400, {"error": str(e)})
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        try:
+            for ev in itertools.chain([first], events):
+                self.wfile.write(f"data: {json.dumps(ev)}\n\n".encode())
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass  # the person pressed Stop
+        except Exception as e:
+            with contextlib.suppress(OSError):
+                self.wfile.write(f"data: {json.dumps({'type': 'error', 'error': f'{type(e).__name__}: {str(e)[:200]}'})}\n\n".encode())
+        finally:
+            events.close()
 
     def _adopt(self, user: dict):
         """Rishi's original files in the project root -> users/<Name>/, and his profile into the database."""
@@ -541,7 +645,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(500, {"error": f"Couldn't read the resume: {str(e)[:200]}"})
         return self._json(200, {"data": data, "resume": pdf.name})
 
-    def _jobs(self, body: dict, save: bool):
+    def _jobs(self, body: dict, save: bool, uid: str | None = None):
         """Add jobs: pasted links, or an uploaded CSV/xlsx with a column mapping. preview -> the rows it would add."""
         from dataclasses import asdict
 
@@ -567,9 +671,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"error": "No jobs found to add"})
         result = db.import_jobs(rows)
         result["duplicates_skipped"] = db.dedupe_jobs()
+        result["scoring"] = _score_new(uid, result.pop("ids"))
         return self._json(200, result)
 
-    def _find_add(self, body: dict):
+    def _find_add(self, body: dict, uid: str):
         """Add the picked search results to the person's jobs (with their match %, so the queue shows it at once)."""
         from . import jobsearch
 
@@ -579,6 +684,7 @@ class Handler(BaseHTTPRequestHandler):
         if not picked:
             return self._json(400, {"error": "Pick at least one job"})
         result = db.import_jobs(jobsearch.to_rows(picked))
+        new_ids = result.pop("ids")
         for r in picked:
             if r.get("match"):
                 try:
@@ -588,6 +694,7 @@ class Handler(BaseHTTPRequestHandler):
                     pass  # older database without the match columns: the run scores it again
             r["added"] = True
         jobsearch.save_found(found)
+        result["scoring"] = _score_new(uid, new_ids)  # the ones the search didn't score (it skips scored ones)
         return self._json(200, result)
 
     def _bank(self, path: str, body: dict, uid: str):

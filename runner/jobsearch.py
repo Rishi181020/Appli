@@ -42,6 +42,13 @@ class Prefs:
     sources: list[str] = field(default_factory=lambda: ["boards", "lists", "remote"])
     companies: list[str] = field(default_factory=list)  # extra careers links (Greenhouse / Lever / Ashby / Workday)
     score_top: int = 40  # how many of the best candidates get the full screen + resume match
+    # filters on what the posting says (known once it's read: they apply to the scored postings)
+    work_models: list[str] = field(default_factory=list)  # onsite | hybrid | remote; empty = any
+    seniorities: list[str] = field(default_factory=list)  # intern | entry | mid | senior | lead; empty = any
+    company_sizes: list[str] = field(default_factory=list)  # startup | mid | large; empty = any
+    skip: list[str] = field(default_factory=list)  # screens on top of your profile's: no_sponsor | citizen | clearance
+    sponsor_only: bool = False  # only postings that offer sponsorship or whose company has sponsored H-1Bs
+    exclude_companies: list[str] = field(default_factory=list)
 
 
 def _prefs_file() -> Path:
@@ -63,6 +70,8 @@ def save_prefs(d: dict) -> Prefs:
         v = d.get(k, default)
         if isinstance(default, list):
             v = [str(x).strip() for x in (v or []) if str(x).strip()][:60]
+        elif isinstance(default, bool):
+            v = v is True
         elif isinstance(default, int):
             try:
                 v = max(1, min(int(v), 400 if k == "days" else 150))
@@ -109,6 +118,7 @@ class Found:
     screened: str | None = None  # reason it was screened out
     match: dict | None = None
     rank: float = 0.0
+    h1b: int | None = None  # H-1B applications the company filed (DOL disclosure data), when loaded
 
 
 def _text(h: str) -> str:
@@ -432,6 +442,9 @@ _INTERN = re.compile(r"\bintern(ship)?\b|\bco-?op\b", re.I)
 _NEW_GRAD = re.compile(r"new ?grad|university|graduate|early[- ]career|entry[- ]level|\bjunior\b|\bjr\.?\b|\bassociate\b|"
                        r"campus|\b(20\d\d)\b|\b(i|1)\b\s*$|engineer i\b|rotational|residency", re.I)
 _REMOTE = re.compile(r"remote|anywhere|distributed", re.I)
+# past early career: "Software Engineer II", "Developer 3", "Mid-level" (job boards list every opening; the lists don't)
+_MID = re.compile(r"\b(ii|iii|iv)\b|\b(engineer|developer|scientist|analyst)\s*[2-5]\b|\bmid[- ]?level\b|\bexperienced\b", re.I)
+LISTS = ("New-grad list", "Internship list")  # SimplifyJobs: curated to early-career roles
 
 
 def _words(s: str) -> list[str]:
@@ -448,12 +461,41 @@ def title_matches(title: str, targets: list[str]) -> bool:
     return any(ws and set(ws) <= have for ws in (_words(t) for t in targets))
 
 
+# Title families (Jobright retrieves by a title taxonomy): a target title in a family also finds its other titles.
+TITLE_FAMILIES = {
+    "software": ["Software Engineer", "Software Developer", "Backend Engineer", "Frontend Engineer", "Fullstack Engineer",
+                 "Application Developer", "Web Developer", "Mobile Engineer", "iOS Engineer", "Android Engineer",
+                 "Product Engineer", "Member of Technical Staff", "Programmer"],
+    "data": ["Data Engineer", "Data Analyst", "Analytics Engineer", "Business Intelligence Engineer", "BI Analyst",
+             "Data Scientist"],
+    "ml": ["ML Engineer", "AI Engineer", "Applied Scientist", "Research Engineer", "Deep Learning Engineer",
+           "LLM Engineer", "NLP Engineer", "Computer Vision Engineer", "MLOps Engineer"],
+    "infra": ["DevOps Engineer", "Site Reliability Engineer", "SRE", "Infrastructure Engineer", "Platform Engineer",
+              "Cloud Engineer", "Systems Engineer"],
+    "security": ["Security Engineer", "Application Security Engineer", "Cybersecurity Engineer", "Security Analyst"],
+    "fde": ["Forward Deployed Engineer", "Solutions Engineer", "Customer Engineer", "Implementation Engineer"],
+    "pm": ["Product Manager", "Technical Product Manager", "Associate Product Manager"],
+    "qa": ["QA Engineer", "Test Engineer", "Software Development Engineer in Test", "SDET", "Quality Engineer"],
+}
+
+
+def expand_titles(targets: list[str]) -> list[str]:
+    """The targets plus every title of each family one of them belongs to (equal words, any order)."""
+    out = list(targets)
+    for family in TITLE_FAMILIES.values():
+        if any(set(_words(t)) == set(_words(f)) for t in targets for f in family):
+            out += [f for f in family if f not in out]
+    return out
+
+
 def level_ok(f: Found, levels: list[str]) -> bool:
     if not levels:
         return True
     intern = bool(_INTERN.search(f.title)) or f.source == "Internship list"
     if intern:
         return "intern" in levels
+    if f.source not in LISTS and _MID.search(f.title):
+        return False
     if "new_grad" in levels and (_NEW_GRAD.search(f.title) or f.source == "New-grad list"):
         return True
     return "entry" in levels  # not an internship, no seniority word (the exclude list takes those out)
@@ -476,14 +518,23 @@ def location_ok(loc: str, prefs: Prefs, country: str, state: str) -> bool:
     return country.lower() in loc.lower() if country else True
 
 
-def keep(f: Found, prefs: Prefs, country: str, state: str, active_screens: frozenset[str]) -> str | None:
-    """None = keep; else why it was filtered out (for the counts)."""
-    # the SimplifyJobs lists are already curated to early-career roles: take every position; boards list every opening
-    if prefs.titles and f.source not in ("New-grad list", "Internship list") and not title_matches(f.title, prefs.titles):
+def keep(f: Found, prefs: Prefs, country: str, state: str, active_screens: frozenset[str],
+         titles: list[str] | None = None) -> str | None:
+    """None = keep; else why it was filtered out (for the counts). titles: the targets with their families."""
+    # the SimplifyJobs lists are curated by level, not field (hardware, analyst and marketing roles too): titles apply
+    titles = titles if titles is not None else expand_titles(prefs.titles)
+    if prefs.titles and not title_matches(f.title, titles):
         return "title"
-    low = f" {f.title.lower()} "
+    low = f" {f.title.lower()} ".replace("member of technical staff", "mts")  # a title, not "staff" seniority
     if any(re.search(rf"(?<![a-z]){re.escape(x.lower())}(?![a-z])", low) for x in prefs.exclude):
         return "excluded word"
+    if any(_company(f.company) == _company(x) for x in prefs.exclude_companies):
+        return "excluded company"
+    if prefs.work_models and _REMOTE.search(f.location or "") and "remote" not in prefs.work_models \
+            and not re.search(r"hybrid|on-?site|office", f.location, re.I):
+        return "work model"
+    if prefs.sponsor_only and f.sponsorship in ("Does Not Offer Sponsorship", "U.S. Citizenship is Required"):
+        return "no sponsorship"
     if not level_ok(f, prefs.levels):
         return "level"
     if not location_ok(f.location, prefs, country, state):
@@ -498,18 +549,37 @@ def keep(f: Found, prefs: Prefs, country: str, state: str, active_screens: froze
     return None
 
 
-def rank(f: Found, prefs: Prefs) -> float:
-    age = _age_days(f.posted)
-    score = 0.0
-    score += 3 if f.ats in SUPPORTED else 0  # Appli can fill it
-    score += max(0, 2 - (age or 30) / 15)  # newer first
-    score += 1 if f.sponsorship == "Offers Sponsorship" else 0
+def freshness(age: int | None) -> float:
+    """About 2.3 for a posting from today, halving its lead each week toward 1 (Jobright multiplies by the same idea)."""
+    return 1 + 1.3 * 0.5 ** ((30 if age is None else max(0, age)) / 7)
+
+
+def _company(name: str) -> str:
+    return re.sub(r"\b(inc|llc|ltd|corp|corporation|co|company|technologies|labs)\b\.?|[^a-z0-9]+", "", (name or "").lower())
+
+
+def rank(f: Found, prefs: Prefs, feedback: dict | None = None) -> float:
+    """relevance x freshness x boost: a perfect match from last month doesn't outrank everything posted today."""
+    if f.screened:
+        return 0.0
+    relevance = 1.0
+    relevance += 1 if any(" ".join(_words(t)) == " ".join(_words(f.title)) for t in prefs.titles) else 0
     # early-career titles first when that's what the person is after
     if {"new_grad", "intern"} & set(prefs.levels) and (_NEW_GRAD.search(f.title) or _INTERN.search(f.title)
                                                         or f.source in ("New-grad list", "Internship list")):
-        score += 2
-    score += 1 if any(" ".join(_words(t)) == " ".join(_words(f.title)) for t in prefs.titles) else 0
-    return score
+        relevance += 1
+    overall = ((f.match or {}).get("breakdown") or {}).get("pct", f.match_pct)
+    if overall is not None:  # read and scored: the match decides most of it
+        relevance *= 0.5 + overall
+    boost = 1.5 if f.ats in SUPPORTED else 1.0  # Appli can fill it
+    boost *= 3.0 if f.source in LISTS else 1.0  # SimplifyJobs postings first: really early-career, unlike many board openings
+    boost *= 1.1 if f.sponsorship == "Offers Sponsorship" or (f.h1b or 0) > 0 else 1.0
+    ignored = list((feedback or {}).get("ignored", {}).values())
+    if any(_company(x.get("company", "")) == _company(f.company) for x in ignored):
+        boost *= 0.5  # you said "not interested" to a job at this company
+    if any(_words(x.get("title", "")) == _words(f.title) for x in ignored):
+        boost *= 0.7
+    return round(relevance * freshness(_age_days(f.posted)) * boost, 4)
 
 
 # ---- scoring: read the posting, screen it, match it against the resumes -----------------------------------------
@@ -577,8 +647,9 @@ def score(items: list[Found], active: frozenset[str], log) -> None:
 
     with ThreadPoolExecutor(max_workers=4) as ex:
         for i, f in enumerate(ex.map(one, items), 1):
+            overall = ((f.match or {}).get("breakdown") or {}).get("pct", f.match_pct)
             what = (f"screened out: {f.screened[:70]}" if f.screened else
-                    f"match {f.match_pct:.0%} ({config.RESUME_LABELS.get(f.resume, f.resume)})" if f.match_pct is not None
+                    f"match {overall:.0%} ({config.RESUME_LABELS.get(f.resume, f.resume)})" if overall is not None
                     else "no posting text")
             log(f"[{i}/{len(items)}] {f.company} - {f.title}: {what}")
 
@@ -599,6 +670,129 @@ def save_found(d: dict):
     _found_file().write_text(json.dumps(d), encoding="utf-8")
 
 
+# ---- after reading a posting: the filters that need what it says ------------------------------------------------
+def post_filter(f: Found, prefs: Prefs) -> str | None:
+    """None = keep; else why. Only for scored postings: an unread one passes (nothing known yet)."""
+    q = (f.match or {}).get("quals") or {}
+    model = q.get("work_model") or ("remote" if _REMOTE.search(f.location or "") else None)
+    if prefs.work_models and model and model not in prefs.work_models:
+        return "work model"
+    # a SimplifyJobs listing is curated early-career: trusted over the AI's read of the posting's level
+    if prefs.seniorities and f.source not in LISTS and q.get("seniority") and q["seniority"] not in prefs.seniorities:
+        return "seniority"
+    # a board opening the posting itself pitches past early career, when that's all the person searches for
+    if f.source not in LISTS and not prefs.seniorities and prefs.levels and set(prefs.levels) <= {"intern", "new_grad", "entry"} \
+            and (q.get("seniority") in ("mid", "senior", "lead") or (q.get("min_yoe") or 0) >= 3):
+        return "seniority"
+    if prefs.company_sizes and q.get("company_size") and q["company_size"] not in prefs.company_sizes:
+        return "company size"
+    if prefs.sponsor_only and f.sponsorship != "Offers Sponsorship" and not (f.h1b or 0) > 0:
+        return "no sponsorship"
+    return None
+
+
+# ---- your feedback: like / not interested / applied -------------------------------------------------------------
+FEEDBACK = {"like": "liked", "ignore": "ignored", "apply": "applied"}
+
+
+def set_feedback(key: str, action: str) -> dict:
+    """Mark one result. Not interested hides it (and down-weights its company and title from then on); applied keeps
+    it out of later searches; liked jobs are what "similar jobs" compares against. action "clear" undoes any of them."""
+    if action not in (*FEEDBACK, "clear"):
+        raise ValueError("Unknown action")
+    found = load_found()
+    r = next((x for x in found.get("results", []) if x["key"] == key), None)
+    if r is None:
+        raise ValueError("That result is gone: search again")
+    fb = found.setdefault("feedback", {})
+    for bucket in FEEDBACK.values():
+        fb.setdefault(bucket, {}).pop(key, None)
+    r["feedback"] = None
+    if action != "clear":
+        fb[FEEDBACK[action]][key] = {"company": r["company"], "title": r["title"], "url": r["url"],
+                                     "terms": [t["term"] for t in (r.get("match") or {}).get("terms") or []]}
+        r["feedback"] = FEEDBACK[action]
+    save_found(found)
+    return found
+
+
+# ---- H-1B history (public DOL LCA disclosure files) -------------------------------------------------------------
+H1B_PAGE = "https://www.dol.gov/agencies/eta/foreign-labor/performance"
+
+
+def _h1b_file() -> Path:
+    return config.HOME / "h1b.json"
+
+
+def h1b_counts() -> dict[str, int]:
+    try:
+        return json.loads(_h1b_file().read_text(encoding="utf-8")).get("companies", {})
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+def load_h1b(source: str, log=print) -> int:
+    """Read a DOL LCA disclosure file (.xlsx or .csv, a path or a link from H1B_PAGE) once: certified H-1B filings per
+    employer go to users/<Name>/h1b.json. Returns how many employers. Loading another file adds to the counts."""
+    import csv
+    import io
+    import tempfile
+
+    if re.match(r"https?://", source):
+        log(f"Downloading {source} (these files are large: a few minutes)...")
+        tmp = Path(tempfile.mkdtemp()) / Path(source.split("?")[0]).name
+        with httpx.stream("GET", source, timeout=600, follow_redirects=True, headers=UA) as r:
+            r.raise_for_status()
+            with open(tmp, "wb") as fh:
+                for chunk in r.iter_bytes():
+                    fh.write(chunk)
+        path = tmp
+    else:
+        path = Path(source)
+    counts = h1b_counts()
+
+    def tally(rows):
+        header = [str(h or "").strip().upper() for h in next(rows)]
+        col = {h: i for i, h in enumerate(header)}
+        emp, status, visa = col.get("EMPLOYER_NAME"), col.get("CASE_STATUS"), col.get("VISA_CLASS")
+        if emp is None:
+            raise ValueError("Not an LCA disclosure file: no EMPLOYER_NAME column")
+        for n, row in enumerate(rows, 1):
+            if status is not None and not str(row[status] or "").lower().startswith("certified"):
+                continue
+            if visa is not None and str(row[visa] or "").upper() not in ("H-1B", ""):
+                continue
+            name = _company(str(row[emp] or ""))
+            if name:
+                counts[name] = counts.get(name, 0) + 1
+            if n % 200_000 == 0:
+                log(f"  {n:,} filings read")
+
+    if path.suffix.lower() == ".csv":
+        with io.open(path, encoding="utf-8", errors="replace", newline="") as fh:
+            tally(csv.reader(fh))
+    else:
+        from openpyxl import load_workbook
+
+        wb = load_workbook(path, read_only=True)
+        try:
+            tally(wb.active.iter_rows(values_only=True))
+        finally:
+            wb.close()
+    _h1b_file().write_text(json.dumps({"source": source, "companies": counts}), encoding="utf-8")
+    return len(counts)
+
+
+# ---- the daily digest: new strong matches for the dashboard's activity panel --------------------------------------
+def digest(previous: dict, out: dict) -> dict:
+    """Strong matches in this search that the last one didn't have."""
+    seen = {r["key"] for r in previous.get("results", [])}
+    new = [r for r in out["results"] if r["key"] not in seen and not r.get("screened")
+           and ((r.get("match") or {}).get("breakdown") or {}).get("band") == "strong"]
+    return {"at": out["searched_at"], "count": len(new),
+            "jobs": [{"key": r["key"], "company": r["company"], "title": r["title"]} for r in new[:5]]}
+
+
 def search(log=print) -> dict:
     from .db import all_jobs
     from .profile import load_profile
@@ -610,7 +804,12 @@ def search(log=print) -> dict:
         prefs.titles = suggest_titles(profile.text)
         save_prefs(asdict(prefs))
         log(f"Search titles (suggested from your profile; edit them on Find jobs): {', '.join(prefs.titles)}")
-    active = active_screens(profile.standard_answers)
+    active = active_screens(profile.standard_answers) | frozenset(prefs.skip)
+    previous = load_found()
+    feedback = previous.get("feedback") or {}
+    titles = expand_titles(prefs.titles)
+    if len(titles) > len(prefs.titles):
+        log(f"  with related titles: {', '.join(titles[len(prefs.titles):])}")
     log(f"Searching for: {', '.join(prefs.titles)} | levels {', '.join(prefs.levels) or 'any'} | "
         f"{', '.join(prefs.locations) or 'anywhere in ' + (profile.country or 'your country')} | last {prefs.days} days")
 
@@ -638,7 +837,9 @@ def search(log=print) -> dict:
         if f.key in have:
             counts["already in your jobs"] = counts.get("already in your jobs", 0) + 1
             continue
-        why = keep(f, prefs, profile.country, profile.state, active)
+        hidden = ("not interested" if f.key in feedback.get("ignored", {}) else
+                  "applied" if f.key in feedback.get("applied", {}) else None)
+        why = hidden or keep(f, prefs, profile.country, profile.state, active, titles)
         if why:
             counts[why] = counts.get(why, 0) + 1
             continue
@@ -664,8 +865,10 @@ def search(log=print) -> dict:
         for f in kept:  # the same posting listed on two boards (or on a board and a company's own board)
             uniq.setdefault(f.key, f)
         kept = list(uniq.values())
+    h1b = h1b_counts()
     for f in kept:
-        f.rank = rank(f, prefs)
+        f.h1b = h1b.get(_company(f.company)) if h1b else None
+        f.rank = rank(f, prefs, feedback)
     kept.sort(key=lambda f: (-f.rank, f.company))
     counts["matched"] = len(kept)
     log("Filtered: " + ", ".join(f"{k} {v}" for k, v in counts.items()))
@@ -673,19 +876,30 @@ def search(log=print) -> dict:
     top = kept[: prefs.score_top]
     log(f"Reading, screening and scoring the top {len(top)}...")
     score(top, active, log)
+    scored = []
     for f in top:
-        f.rank += (f.match_pct or 0) * 5 - (10 if f.screened else 0)
-    results = sorted(top, key=lambda f: -f.rank) + kept[prefs.score_top:]
+        why = None if f.screened else post_filter(f, prefs)
+        if why:
+            counts[why] = counts.get(why, 0) + 1
+            continue
+        f.rank = rank(f, prefs, feedback)  # now with the match
+        scored.append(f)
+    results = sorted(scored, key=lambda f: -f.rank) + kept[prefs.score_top:]
+    liked = feedback.get("liked", {})
     out = {
         "searched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "prefs": asdict(prefs),
         "counts": counts,
+        "feedback": feedback,
+        "h1b_loaded": bool(h1b),
         "results": [{**{k: v for k, v in asdict(f).items() if k not in ("description", "match")},
-                     "fillable": f.ats in SUPPORTED, "scored": i < len(top), "added": False,
-                     "match": f.match} for i, f in enumerate(results)],
+                     "fillable": f.ats in SUPPORTED, "scored": i < len(scored), "added": False,
+                     "feedback": "liked" if f.key in liked else None, "match": f.match} for i, f in enumerate(results)],
     }
+    out["digest"] = digest(previous, out)
     save_found(out)
-    log(f"Done: {len(kept)} relevant posting(s); top {len(top)} scored. Open Find jobs to pick.")
+    log(f"Done: {len(results)} relevant posting(s); top {len(scored)} scored"
+        + (f", {out['digest']['count']} new strong match(es)" if out["digest"]["count"] else "") + ". Open Find jobs to pick.")
     return out
 
 

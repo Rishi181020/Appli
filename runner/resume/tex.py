@@ -352,3 +352,103 @@ def markup_problems(markup: str) -> list[str]:
     if "\n" in markup.strip():
         problems.append("contains a line break")
     return problems
+
+
+# ---- export styles (the person's choice on Tailor resume; empty = their template exactly as it is) -----------------
+STYLE_KEYS = {"template": ("standard", "compact"), "header": ("center", "left"),
+              "date_format": ("Mon YYYY", "Month YYYY", "MM/YYYY", "YYYY-MM"), "skills_columns": (1, 2),
+              "divider": (True, False)}
+_MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
+                "November", "December"]
+_DATE = re.compile(r"\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+((?:19|20)\d\d)\b|"
+                   r"\b(0?[1-9]|1[0-2])/((?:19|20)\d\d)\b|\b((?:19|20)\d\d)-(0[1-9]|1[0-2])\b")
+
+
+def clean_style(style: dict | None) -> dict:
+    """Only known keys with allowed values."""
+    return {k: v for k, v in (style or {}).items() if k in STYLE_KEYS and v in STYLE_KEYS[k]}
+
+
+def format_dates(text: str, fmt: str | None) -> str:
+    """'Sep 2025 - Jun 2027' in the chosen format (Mon YYYY, Month YYYY, MM/YYYY or YYYY-MM)."""
+    if fmt not in STYLE_KEYS["date_format"]:
+        return text
+
+    def one(m):
+        if m[1]:
+            month, year = [x[:3] for x in _MONTH_NAMES].index(m[1]) + 1, m[2]
+        elif m[3]:
+            month, year = int(m[3]), m[4]
+        else:
+            month, year = int(m[6]), m[5]
+        return {"Mon YYYY": f"{_MONTH_NAMES[month - 1][:3]} {year}", "Month YYYY": f"{_MONTH_NAMES[month - 1]} {year}",
+                "MM/YYYY": f"{month:02d}/{year}", "YYYY-MM": f"{year}-{month:02d}"}[fmt]
+
+    return _DATE.sub(one, text)
+
+
+def _macro_groups(src: str, name: str, which: int, fn) -> str:
+    """Rewrite the `which`-th {...} argument (1-based) of every \\name call with fn(content)."""
+    out, pos = [], 0
+    for m in re.finditer(r"\\" + name + r"(?![A-Za-z])", src):
+        if m.start() < pos:
+            continue
+        idx, span = m.end(), None
+        for k in range(which):
+            o = idx
+            while o < len(src) and src[o] in " \t\r\n":
+                o += 1
+            if o >= len(src) or src[o] != "{":
+                break
+            c = _match_brace(src, o)
+            if c == -1:
+                break
+            if k == which - 1:
+                span = (o + 1, c)
+            idx = c + 1
+        if span:
+            out += [src[pos:span[0]], fn(src[span[0]:span[1]])]
+            pos = span[1]
+    return "".join(out) + src[pos:]
+
+
+def styled(src: str, style: dict | None) -> str:
+    """The LaTeX resume with the person's export style applied. Each change is a no-op when the template doesn't have
+    the part it changes, so any resume still compiles."""
+    style = clean_style(style)
+    if not style or r"\begin{document}" not in src:
+        return src
+    pre, body = src.split(r"\begin{document}", 1)
+    if style.get("template") == "compact":
+        pre = re.sub(r"(\\documentclass\[[^\]]*?)\b1[0-2](?:\.5)?pt", r"\g<1>10pt", pre, count=1)
+        # tighter lines and a little more page: about four more lines of room
+        pre += ("\\addtolength{\\topmargin}{-0.15in}\\addtolength{\\textheight}{0.3in}\n"
+                "\\AtBeginDocument{\\linespread{0.92}\\selectfont}\n")
+    if style.get("divider") is False:
+        pre = re.sub(r"\\titlerule(\s*\[[^\]]*\])?", "", pre)
+    if style.get("header") == "left":
+        first = body.find(r"\section")
+        head = body[:first] if first > 0 else body
+        head = head.replace(r"\begin{center}", r"\begin{flushleft}").replace(r"\end{center}", r"\end{flushleft}")
+        body = head + (body[first:] if first > 0 else "")
+    if style.get("date_format"):
+        fmt = style["date_format"]
+        body = _macro_groups(body, "resumeSubheading", 4, lambda s: format_dates(s, fmt))
+        body = _macro_groups(body, "resumeProjectHeading", 2, lambda s: format_dates(s, fmt))
+    if style.get("skills_columns") == 2:
+        m = re.search(r"(\\section\*?\{[^}]*[Ss]kill[^}]*\})(.*?)(?=\\section|\\end\{document\})", body, re.S)
+        if m:
+            body = (body[:m.start(2)] + "\n\\begin{multicols}{2}" + m.group(2).rstrip() + "\n\\end{multicols}\n"
+                    + body[m.end(2):])
+            if "{multicol}" not in pre:
+                pre += "\\usepackage{multicol}\n"
+    return pre + r"\begin{document}" + body
+
+
+def compile_styled(src: str, style: dict | None) -> tuple[str, Compiled]:
+    """Compile with the style; if the styled source doesn't compile, the person's own layout instead."""
+    s = styled(src, style)
+    comp = compile_tex(s)
+    if comp.ok or s == src:
+        return s, comp
+    return src, compile_tex(src)

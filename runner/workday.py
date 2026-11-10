@@ -193,12 +193,26 @@ def extract(page: Page, skip_sections: list[str] | None = None, root: str | None
                    [o for o in r["options"] if o]) for r in raw]
 
 
+# the open popup is the last listbox: earlier ones are other fields' selected-value pills ("United States of America (+1)")
+_OPEN_OPTIONS = 'ul[role="listbox"]:visible >> nth=-1 >> [role="option"]'
+
+
+def _loc(page: Page, f: WField, inner: str = ""):
+    """The field's tagged element; when Workday redrew the form (the tag is gone), the field by Workday's own id."""
+    loc = page.locator(f'[data-appli="{f.id}"]')
+    if not loc.count() and f.aid:
+        alt = page.locator(f'[data-automation-id="formField-{f.aid}"] {inner}'.strip())
+        if alt.count() == 1:  # a repeated block's field (Education 2) has the same id: never guess between them
+            return alt
+    return loc
+
+
 def _list_options(page: Page, f: WField) -> list[str]:
-    btn = page.locator(f'[data-appli="{f.id}"]')
+    btn = _loc(page, f, 'button[aria-haspopup="listbox"]')
     try:
         btn.click(timeout=3000)
         page.wait_for_timeout(350)
-        opts = [o.strip() for o in page.locator('ul[role="listbox"] [role="option"]:visible').all_inner_texts()]
+        opts = [o.strip() for o in page.locator(_OPEN_OPTIONS).all_inner_texts()]
         page.keyboard.press("Escape")
         page.wait_for_timeout(150)
         return [o for o in opts if o and not re.match(r"^select one$", o, re.I)]
@@ -207,22 +221,27 @@ def _list_options(page: Page, f: WField) -> list[str]:
 
 
 def _pick_list(page: Page, f: WField, value: str) -> bool:
-    btn = page.locator(f'[data-appli="{f.id}"]')
+    btn = _loc(page, f, 'button[aria-haspopup="listbox"]')
     try:
         btn.click(timeout=3000)
         page.wait_for_timeout(350)
-        opts = page.locator('ul[role="listbox"] [role="option"]:visible')
+        opts = page.locator(_OPEN_OPTIONS)
         texts = [o.strip() for o in opts.all_inner_texts()]
         target = fuzzy_option(value, texts)
         if target is None:
             page.keyboard.press("Escape")
             return False
         o = opts.nth(texts.index(target))
-        o.scroll_into_view_if_needed(timeout=2000)
-        o.click(timeout=3000)
+        try:
+            o.click(timeout=4000)  # scrolls a long popup (State) to the option itself
+        except Exception as e:
+            print(f"    workday {f.label}: clicking {target!r} failed ({type(e).__name__}: {str(e)[:80]}), using the keyboard")
+            o.focus(timeout=2000)
+            page.keyboard.press("Enter")
         page.wait_for_timeout(250)
         return True
-    except Exception:
+    except Exception as e:
+        print(f"    workday {f.label}: couldn't pick {value!r}: {type(e).__name__}: {str(e)[:100]}")
         try:
             page.keyboard.press("Escape")
         except Exception:
@@ -233,16 +252,24 @@ def _pick_list(page: Page, f: WField, value: str) -> bool:
 def _pick_prompt(page: Page, f: WField, value: str, matcher=None) -> bool:
     """Search prompts ("How did you hear about us?", school, skills): type, Enter, pick the closest result."""
     matcher = matcher or fuzzy_option
-    box = page.locator(f'[data-appli="{f.id}"]')
+    box = _loc(page, f)
     try:
         inp = box.locator("input").first
         inp.click(timeout=3000)
-        inp.fill(value[:60])
-        inp.press("Enter")
-        page.wait_for_timeout(900)
-        opts = page.locator('[data-automation-id="promptOption"]:visible, [role="option"]:visible')
-        texts = [o.strip() for o in opts.all_inner_texts()]
-        target = matcher(value, texts)
+        target = None
+        # the full value, then its first two words ("Computer Science and Engineering" finds "Computer Science")
+        for q in dict.fromkeys([value[:60], " ".join(value.split()[:2])]):
+            inp.fill(q)
+            inp.press("Enter")
+            page.wait_for_timeout(900)
+            opts = page.locator('[data-automation-id="promptOption"]:visible')
+            if not opts.count():
+                # the last listbox, not [role=option] page-wide: that includes other fields' picks
+                opts = page.locator('[role="listbox"]:visible >> nth=-1 >> [role="option"]')
+            texts = [o.strip() for o in opts.all_inner_texts()]
+            target = matcher(value, texts)
+            if target is not None:
+                break
         if target is None:
             inp.fill("")
             page.keyboard.press("Escape")
@@ -423,6 +450,7 @@ _ADD_JS = r"""
   document.querySelectorAll('[data-appli-add]').forEach(b => b.removeAttribute('data-appli-add'));
   const base = title.toLowerCase().replace(/s$/, '');
   const byLabel = [...document.querySelectorAll('button')].find(b => {
+    if (!b.getClientRects().length) return false;  // a hidden copy of the button: clicking it times out
     const a = (b.getAttribute('aria-label') || '').toLowerCase();
     return a.startsWith('add ' + base) || a.startsWith('add another ' + base);
   });
@@ -445,20 +473,27 @@ def _fill_date(page: Page, f: WField, ym: str) -> bool:
     if not m:
         return False
     box = page.locator(f'[data-appli="{f.id}"]')
+
+    def type_into(inp, text):
+        try:
+            inp.click(timeout=1500)
+        except Exception:  # Workday lays a "dateSection...-display" div over the input: it takes the click
+            inp.focus(timeout=2000)
+        page.keyboard.type(text, delay=40)
+
     try:
         month, year = box.locator(A("dateSectionMonth-input")), box.locator(A("dateSectionYear-input"))
         if month.count() and m.group(2):
-            month.first.click(timeout=3000)
-            page.keyboard.type(f"{int(m.group(2)):02d}", delay=40)
+            type_into(month.first, f"{int(m.group(2)):02d}")
         if year.count():
-            year.first.click(timeout=3000)
-            page.keyboard.type(m.group(1), delay=40)
+            type_into(year.first, m.group(1))
         else:
             inp = box.locator("input").first
             inp.fill(f"{int(m.group(2)):02d}/{m.group(1)}" if m.group(2) else m.group(1), timeout=3000)
         page.wait_for_timeout(200)
         return True
-    except Exception:
+    except Exception as e:
+        print(f"    workday {f.label}: couldn't type {ym!r}: {type(e).__name__}: {str(e)[:100]}")
         return False
 
 
@@ -559,7 +594,11 @@ def _fill_section(t: Tracked, title: str, items: list, value_of) -> tuple[int, l
                 left.append({"id": f"{slug}-{i}", "label": f"{title} {i}", "required": False,
                              "reason": "couldn't add another entry: add it in the browser"})
                 break
-            page.locator("[data-appli-add]").first.click(timeout=4000)
+            try:
+                page.locator("[data-appli-add]").first.click(timeout=4000)
+            except Exception:  # re-rendered (the tag is gone) or covered: find it again and click it from the page
+                page.evaluate(_ADD_JS, title)
+                page.locator("[data-appli-add]").first.evaluate("b => b.click()")
             page.wait_for_timeout(1000)
             have = page.evaluate(_BLOCKS_JS, title)
             if have < i:
@@ -653,7 +692,7 @@ def _fill_page(t: Tracked, kind: str) -> tuple[int, list[dict]]:
             rest.append(f)
     by_id = {f.id: f for f in rest}
     left: list[dict] = []
-    if kind in ("questions", "other"):
+    if kind == "other":  # a page it doesn't recognise: only what you've already said
         for f in rest:
             v = direct_answer(f.as_field(), profile, t.bank)
             if v:
@@ -661,7 +700,7 @@ def _fill_page(t: Tracked, kind: str) -> tuple[int, list[dict]]:
             else:
                 left.append({"id": f.id, "label": f.label, "required": f.required, "options": f.options,
                              "reason": "the company's question: answer it once and it's saved for next time"})
-    else:
+    else:  # company questions too: saved answers -> profile -> Jev -> model; legal ones still come to you
         res = answer_fields([f.as_field() for f in rest], profile, t.bank, t.job, t.resume_text, known=t.known)
         for fid, v in res.values.items():
             values[fid] = (v, res.tiers.get(fid, ""))
@@ -681,9 +720,18 @@ def _fill_page(t: Tracked, kind: str) -> tuple[int, list[dict]]:
                          "options": f.options})
     for f in wfields:
         if f.kind == "consent" and not f.value:
+            # you've authorised the runner to accept application terms ("I have read and consent..."); opt-ins stay off
+            if _ACK.search(f.label) and not _OPT_IN.search(f.label) and _check(page, f):
+                n += 1
+                t.filled.append({"label": f.label, "value": "ticked", "tier": "direct"})
+                continue
             left.append({"id": f.id, "label": f.label, "reason": "checkbox/consent: tick it in the browser",
                          "required": f.required})
     return n, left
+
+
+_ACK = re.compile(r"\b(i have read|read and|acknowledge|consent|i agree|agree to|certify|attest|terms and conditions)\b", re.I)
+_OPT_IN = re.compile(r"\b(sms|text messages?|marketing|newsletter|promotional|job alerts?)\b", re.I)
 
 
 def _fill_from_bank(t: Tracked) -> int:
@@ -765,7 +813,8 @@ def _continue(t: Tracked) -> tuple[bool, list[str], str]:
             if signature(page, read_step(page)) != before:
                 return True, [], ""
         try:
-            errors = list(dict.fromkeys(page.evaluate(_ERRORS_JS)))[:12]
+            # role=alert also holds Workday's notices ("Resume.pdf successfully uploaded"): not reasons it refused
+            errors = [e for e in dict.fromkeys(page.evaluate(_ERRORS_JS)) if not re.search(r"\bsuccess", e, re.I)][:12]
         except Exception:
             errors = []
         if errors:  # Workday refused the page: a required answer is missing or wrong
@@ -903,13 +952,16 @@ def step(t: Tracked, update, reload_bank=None) -> str:
     s = read_step(page)
     if _CONFIRM.search(s["body"]) and not s["password"]:
         return "submitted"
+    if t.kind == "review" and re.match(r"welcome\b", s["name"], re.I):
+        return "submitted"  # Review -> Submit -> Workday's candidate home ("Welcome, <name>")
     sig = signature(page, s)
     if sig == t.sig:
         if t.help and time.time() - t.help_checked > 4:
             return _recheck(t, update, reload_bank)
         return "waiting"
     # a page still loading has no step name, no fields and no buttons yet: look again in a moment
-    if not s["name"] and not s["password"] and t.blank_polls < 6:
+    # (the sign-in step shows its title before its password box: wait for the box rather than call it unknown)
+    if (not s["name"] or re.search(r"sign in|create account", s["name"], re.I)) and not s["password"] and t.blank_polls < 6:
         try:
             empty = not page.locator(f'[data-automation-id^="formField-"], {_NEXT}').count()
         except Exception:

@@ -3,7 +3,8 @@ import { BankData, BankEntry, BANK_KINDS, agent, fileToBase64 } from "./lib";
 import { IconAlert, IconCheck, IconRefresh, IconSearch, IconX } from "./Icons";
 
 const blank = (kind = "experience"): BankEntry => ({ id: "", kind, title: "", org: "", location: "", start: "", end: "", link: "", text: "", tags: [], source: "typed", updated: "" });
-const hasOrg = (k: string) => ["experience", "research", "leadership", "education", "award", "publication"].includes(k);
+const hasOrg = (k: string) => ["experience", "research", "leadership", "education", "award", "publication", "project"].includes(k);
+const orgLabel = (k: string) => (k === "publication" ? "Venue" : k === "project" ? "Prize won (optional)" : "Organization");
 
 function EntryForm({ entry, onSave, onCancel, busy }: { entry: BankEntry; onSave: (e: BankEntry) => void; onCancel: () => void; busy: boolean }) {
   const [e, setE] = useState(entry);
@@ -27,8 +28,8 @@ function EntryForm({ entry, onSave, onCancel, busy }: { entry: BankEntry; onSave
         </label>
         {hasOrg(e.kind) && (
           <label className="pf-field">
-            <span>{e.kind === "publication" ? "Venue" : "Organization"}</span>
-            <input value={e.org} onChange={(x) => set("org", x.target.value)} />
+            <span>{orgLabel(e.kind)}</span>
+            <input value={e.org} onChange={(x) => set("org", x.target.value)} placeholder={e.kind === "project" ? "1st Place, XYZ Hackathon: shown next to the project's name" : ""} />
           </label>
         )}
         <label className="pf-field">

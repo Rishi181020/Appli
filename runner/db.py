@@ -164,9 +164,10 @@ def import_jobs(rows: list[JobRow]) -> dict:
             seen_canon.add(c)
         new.append(r)
     payload = job_payload(new, user_id())
+    ids = []
     for i in range(0, len(payload), 200):
-        sb().table("jobs").insert(payload[i : i + 200]).execute()
-    return {"inserted": len(new), "already_present": len(rows) - len(new)}
+        ids += [r["id"] for r in sb().table("jobs").insert(payload[i : i + 200]).execute().data or []]
+    return {"inserted": len(new), "already_present": len(rows) - len(new), "ids": ids}
 
 
 def park_unsupported() -> int:
