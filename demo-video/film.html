@@ -1,0 +1,281 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Appli promo</title>
+<style>
+:root{--bg:#040b08;--ink:#eafff6;--muted:#8fb5a6;--mint:#2ef5b0;--lime:#c8ff6e;--deep:#05281c;--amber:#ffb84d;--red:#ff5d6c;--violet:#8c78ff;--card:#0b1a14;--line:#173a2c}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:1920px;height:1080px;overflow:hidden;background:var(--bg);color:var(--ink);font-family:"Inter Display","Inter",sans-serif;-webkit-font-smoothing:antialiased}
+#stage{position:absolute;inset:0;overflow:hidden}
+.bg{position:absolute;inset:0}
+.blob{position:absolute;border-radius:50%;filter:blur(110px);opacity:.55}
+.grid{position:absolute;inset:-200px;background-image:linear-gradient(rgba(46,245,176,.06) 1px,transparent 1px),linear-gradient(90deg,rgba(46,245,176,.06) 1px,transparent 1px);background-size:64px 64px;mask-image:radial-gradient(ellipse at center,#000 30%,transparent 75%)}
+.scene{position:absolute;inset:0;opacity:0}
+.c{position:absolute;left:0;right:0;text-align:center}
+[data-in]{opacity:0;will-change:transform,opacity}
+.eyebrow{font-family:"JetBrains Mono";font-size:22px;letter-spacing:.18em;color:var(--mint);text-transform:uppercase}
+.h1{font-size:96px;font-weight:700;letter-spacing:-.035em;line-height:1.02}
+.h2{font-size:68px;font-weight:700;letter-spacing:-.03em;line-height:1.05}
+.sub{font-size:32px;color:var(--muted);line-height:1.35}
+.grad{background:linear-gradient(90deg,var(--mint),var(--lime));-webkit-background-clip:text;background-clip:text;color:transparent}
+.win{position:absolute;border-radius:22px;background:#0e1311;border:1px solid #23302b;box-shadow:0 40px 120px rgba(0,0,0,.6),0 0 0 1px rgba(46,245,176,.05);overflow:hidden}
+.win .bar{height:44px;display:flex;align-items:center;gap:10px;padding:0 18px;background:#121916;border-bottom:1px solid #1f2a26;font-family:"JetBrains Mono";font-size:16px;color:#6f8f82}
+.dot{width:13px;height:13px;border-radius:50%;background:#2a3833}
+.dot.r{background:#ff5f57}.dot.y{background:#febc2e}.dot.g{background:#28c840}
+.win img{display:block}
+.chip{display:inline-flex;align-items:center;gap:10px;padding:12px 22px;border-radius:999px;background:rgba(46,245,176,.1);border:1px solid rgba(46,245,176,.35);color:var(--mint);font-size:26px;font-weight:600}
+.pill{display:inline-flex;align-items:center;gap:12px;padding:16px 30px;border-radius:999px;font-size:30px;font-weight:700}
+.ring{position:absolute;border:4px solid var(--mint);border-radius:999px;box-shadow:0 0 30px rgba(46,245,176,.7)}
+.term{font-family:"JetBrains Mono";font-size:24px;line-height:1.75;padding:26px 32px;white-space:pre;color:#cfe9de}
+.term .p{color:var(--mint)}.term .k{color:var(--lime)}.term .m{color:#6f8f82}.term .ok{color:var(--mint);font-weight:700}.term .cl{color:#d97757}
+.caret{display:inline-block;width:13px;height:28px;background:var(--mint);vertical-align:-5px;margin-left:2px}
+.card{position:absolute;border-radius:28px;background:linear-gradient(180deg,#0d1f18,#08130f);border:1px solid var(--line);padding:44px 48px}
+.label{font-size:24px;color:var(--muted);font-weight:500}
+.big{font-weight:800;letter-spacing:-.04em;line-height:1}
+.bar-row{position:absolute;left:0;right:0;height:86px;display:flex;align-items:center}
+.bar-name{width:250px;font-size:32px;font-weight:600;text-align:right;padding-right:28px}
+.bar-fill{height:62px;border-radius:14px;display:flex;align-items:center;justify-content:flex-end;padding-right:22px;font-size:30px;font-weight:800;color:#1a0e0e;white-space:nowrap}
+.tile{position:absolute;width:520px;height:250px;border-radius:26px;background:linear-gradient(180deg,#0e2119,#08130f);border:1px solid var(--line);padding:38px 40px}
+.tile .ic{width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,var(--mint),var(--lime));display:flex;align-items:center;justify-content:center;margin-bottom:22px}
+.tile h3{font-size:34px;font-weight:700;letter-spacing:-.02em;margin-bottom:10px}
+.tile p{font-size:23px;color:var(--muted);line-height:1.35}
+.cursor{position:absolute;width:34px;height:34px;z-index:50;opacity:0}
+.strike{position:absolute;height:10px;background:var(--red);border-radius:6px;transform-origin:left center;box-shadow:0 0 24px rgba(255,93,108,.7)}
+.sweep{position:absolute;background:linear-gradient(90deg,transparent,rgba(46,245,176,.22),transparent);width:260px;top:0;bottom:0}
+.small{font-size:20px;color:#5f7f72}
+</style></head>
+<body><div id="stage">
+<div class="bg">
+  <div class="grid" id="grid"></div>
+  <div class="blob" id="b1" style="width:900px;height:900px;background:#0d6b4c"></div>
+  <div class="blob" id="b2" style="width:700px;height:700px;background:#4f7a14"></div>
+  <div class="blob" id="b3" style="width:600px;height:600px;background:#0b4a5e"></div>
+</div>
+
+<!-- S1 HOOK 0–5.6 -->
+<section class="scene" data-scene="0,5.6">
+  <div class="c" style="top:250px"><div class="sub" id="hookTop" data-in="0.2,0.6,up" style="font-size:40px">Auto-apply tools charge</div></div>
+  <div class="c" style="top:340px">
+    <div id="price" class="big" data-in="0.6,0.7,pop" style="display:inline-block;font-size:260px;position:relative">$<span id="priceN">39.99</span></div>
+  </div>
+  <div class="strike" id="strike" style="left:640px;top:500px;width:640px;transform:scaleX(0)"></div>
+  <div class="c" style="top:650px"><div id="priceUnit" class="sub" data-in="0.9,0.6,up" style="font-size:44px;color:#cfe9de">a month</div></div>
+  <div class="c" style="top:760px"><div class="h2" data-in="3.9,0.6,up" style="font-size:58px">My own API key for filling. <span style="color:#d97757">My own Claude Code</span> for resumes.</div></div>
+</section>
+
+<!-- S2 LOGO 5.6–9.8 -->
+<section class="scene" data-scene="5.6,9.8">
+  <div class="c" style="top:250px"><img src="logo.svg" data-in="5.8,0.8,spin" style="width:200px;height:200px;border-radius:56px;box-shadow:0 0 120px rgba(46,245,176,.45)"></div>
+  <div class="c" style="top:490px"><div class="h1" data-in="6.2,0.7,up" style="font-size:150px">Appli</div></div>
+  <div class="c" style="top:700px"><div class="sub" data-in="6.9,0.6,up" style="font-size:42px;color:#cfe9de">Fills your job applications.</div></div>
+  <div class="c" style="top:780px"><div data-in="7.5,0.6,pop" style="display:inline-flex;align-items:center;gap:20px;font-size:42px;font-weight:600">Then stops before
+    <span class="pill" style="background:#1b2420;border:2px dashed #5f7f72;color:#cfe9de">✋ Submit</span></div></div>
+</section>
+
+<!-- S3 AGENT 9.8–21.4 -->
+<section class="scene" data-scene="9.8,21.4">
+  <div style="position:absolute;left:110px;top:200px;width:560px">
+    <div class="eyebrow" data-in="10.0,0.5,up">01 · The agent</div>
+    <div id="s3h" class="h2" data-in="10.2,0.6,up" style="margin-top:24px;font-size:64px">Fills the form in a real browser.</div>
+    <div class="sub" data-in="10.6,0.6,up" style="margin-top:26px">Your name, your best resume, your saved answers, a cover letter. Up to 20 a day.</div>
+    <div style="margin-top:36px;display:flex;flex-wrap:wrap;gap:14px">
+      <span class="chip" data-in="11.0,0.4,pop">Greenhouse</span><span class="chip" data-in="11.15,0.4,pop">Lever</span>
+      <span class="chip" data-in="11.3,0.4,pop">Ashby</span><span class="chip" data-in="11.45,0.4,pop">Workday</span>
+    </div>
+  </div>
+  <div style="position:absolute;left:110px;top:250px;width:560px" id="s3b">
+    <div class="eyebrow" data-in="15.9,0.5,up">01 · The agent</div>
+    <div class="h2" data-in="16.0,0.6,up" style="margin-top:24px;font-size:64px">You review.<br><span class="grad">You click Submit.</span></div>
+    <div class="sub" data-in="16.5,0.6,up" style="margin-top:26px">Every answer comes from your profile and saved answers. Anything else is left blank and flagged, never guessed.</div>
+  </div>
+  <div class="win" data-in="10.4,0.9,right" style="left:760px;top:120px;width:1080px;height:840px">
+    <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span style="margin-left:14px">localhost:8765 · Applications</span></div>
+    <div id="s3scroll" style="position:relative">
+      <img src="shots/el-live.png" style="width:1080px">
+      <img src="shots/el-list.png" style="width:1040px;margin:24px 20px 0">
+    </div>
+    <div class="chip" id="counter" style="position:absolute;right:26px;top:66px;background:#05281c;font-family:'JetBrains Mono';font-size:22px">Application <b id="ctrN" style="margin-left:6px">1</b>&nbsp;/ 20</div>
+  </div>
+  <div class="win" data-in="15.6,0.8,right" style="left:1180px;top:60px;width:640px;height:960px">
+    <img src="shots/el-drawer.png" style="width:640px">
+    <div class="ring" id="ring" style="left:22px;top:154px;width:182px;height:52px;opacity:0"></div>
+  </div>
+</section>
+
+<!-- S4 CLAUDE CODE 21.4–37.2 -->
+<section class="scene" data-scene="21.4,37.2">
+  <div style="position:absolute;left:110px;top:150px;width:640px" id="s4a">
+    <div class="eyebrow" data-in="21.6,0.5,up">02 · Resume tailoring</div>
+    <div class="h2" data-in="21.8,0.6,up" style="margin-top:24px;font-size:62px">Runs on the <span style="color:#d97757">Claude Code</span> you already have.</div>
+    <div class="sub" data-in="22.3,0.6,up" style="margin-top:26px">Appli finds Claude Code on your computer and calls it with <b style="color:#cfe9de;font-family:'JetBrains Mono';font-size:28px">claude -p</b>, signed in as you.</div>
+    <div style="margin-top:36px;display:flex;flex-direction:column;gap:16px;align-items:flex-start">
+      <span class="chip" data-in="22.8,0.4,pop" style="color:#ffd1bd;border-color:rgba(217,119,87,.5);background:rgba(217,119,87,.12)">🔑 No API key for tailoring</span>
+      <span class="chip" data-in="23.0,0.4,pop" style="color:#ffd1bd;border-color:rgba(217,119,87,.5);background:rgba(217,119,87,.12)">💸 $0 extra: uses your Claude plan</span>
+    </div>
+  </div>
+  <div class="win" data-in="21.9,0.8,right" style="left:820px;top:170px;width:1000px;height:640px" id="termWin">
+    <div class="bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span style="margin-left:14px">appli runner · your computer</span></div>
+    <div class="term" id="term"></div>
+  </div>
+  <!-- rings 28–32 -->
+  <div id="s4b" style="position:absolute;inset:0;opacity:0">
+    <div class="c" style="top:110px"><div class="eyebrow">Quartz Pay · Software Engineer, Payments</div></div>
+    <div class="c" style="top:160px"><div class="h2" style="font-size:60px">Match score, before and after</div></div>
+    <svg id="rings" width="1920" height="700" style="position:absolute;top:290px;left:0">
+      <circle cx="640" cy="300" r="190" fill="none" stroke="#1d2a25" stroke-width="26"/>
+      <circle id="rA" cx="640" cy="300" r="190" fill="none" stroke="#ffb84d" stroke-width="26" stroke-linecap="round" transform="rotate(-90 640 300)" stroke-dasharray="1194" stroke-dashoffset="1194"/>
+      <circle cx="1280" cy="300" r="190" fill="none" stroke="#1d2a25" stroke-width="26"/>
+      <circle id="rB" cx="1280" cy="300" r="190" fill="none" stroke="url(#gm)" stroke-width="26" stroke-linecap="round" transform="rotate(-90 1280 300)" stroke-dasharray="1194" stroke-dashoffset="1194" style="filter:drop-shadow(0 0 18px rgba(46,245,176,.6))"/>
+      <defs><linearGradient id="gm" x1="0" x2="1"><stop offset="0" stop-color="#2ef5b0"/><stop offset="1" stop-color="#c8ff6e"/></linearGradient></defs>
+      <text id="tA" x="640" y="330" text-anchor="middle" font-size="110" font-weight="800" fill="#ffb84d" font-family="Inter Display">0</text>
+      <text id="tB" x="1280" y="330" text-anchor="middle" font-size="110" font-weight="800" fill="#2ef5b0" font-family="Inter Display">0</text>
+      <text x="640" y="560" text-anchor="middle" font-size="34" fill="#8fb5a6" font-family="Inter Display">Your resume</text>
+      <text x="1280" y="560" text-anchor="middle" font-size="34" fill="#8fb5a6" font-family="Inter Display">Tailored by Claude</text>
+      <g id="arrow" opacity="0"><path d="M870 300 H1040" stroke="#2ef5b0" stroke-width="8" stroke-linecap="round"/><path d="M1015 270 L1050 300 L1015 330" fill="none" stroke="#2ef5b0" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/></g>
+    </svg>
+    <div class="c" style="top:930px"><span class="pill" id="plus" style="background:linear-gradient(90deg,var(--mint),var(--lime));color:#05281c;opacity:0">+24 points</span></div>
+  </div>
+  <!-- diff 32–37 -->
+  <div id="s4c" style="position:absolute;inset:0;opacity:0">
+    <div class="c" style="top:90px"><div class="h2" style="font-size:58px">Every line quotes <span class="grad">your real experience.</span></div></div>
+    <div class="c" style="top:175px"><div class="sub">You accept, edit or revert each change.</div></div>
+    <div class="win" style="left:160px;top:270px;width:1600px;height:760px">
+      <div id="diffz" style="position:relative;padding:30px 36px;transform-origin:30% 0"><img src="shots/el-diff.png" style="width:1528px"><div class="sweep" id="sweep"></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- S5 MONEY 37.2–50.2 -->
+<section class="scene" data-scene="37.2,50.2">
+  <div id="s5a" style="position:absolute;inset:0">
+    <div class="c" style="top:110px"><div class="eyebrow" data-in="37.4,0.5,up">03 · What it costs</div></div>
+    <div class="c" style="top:160px"><div class="h2" data-in="37.6,0.6,up">Two engines. <span class="grad">Both yours.</span></div></div>
+    <div class="card" data-in="38.2,0.7,up" style="left:150px;top:330px;width:780px;height:580px">
+      <div class="label">Filling · screening · matching · cover letters</div>
+      <div style="margin-top:22px;font-size:40px;font-weight:700">Your own <span style="color:var(--mint)">OpenRouter API key</span></div>
+      <div class="big" style="margin-top:56px;font-size:190px"><span class="grad">$<span id="m1">0.00</span></span></div>
+      <div style="margin-top:18px;font-size:34px;color:#cfe9de">for 20 applications</div>
+      <div class="small" style="margin-top:18px">in a recent real run</div>
+    </div>
+    <div class="card" data-in="38.6,0.7,up" style="left:990px;top:330px;width:780px;height:580px;border-color:rgba(217,119,87,.45)">
+      <div class="label">Resume tailoring</div>
+      <div style="margin-top:22px;font-size:40px;font-weight:700">Your local <span style="color:#d97757">Claude Code</span></div>
+      <div class="big" style="margin-top:56px;font-size:190px;color:#ffd1bd">$<span id="m2">0</span></div>
+      <div style="margin-top:18px;font-size:34px;color:#cfe9de">extra. No API key.</div>
+      <div class="small" style="margin-top:18px">uses the Claude plan you already pay for</div>
+    </div>
+  </div>
+  <div id="s5b" style="position:absolute;inset:0;opacity:0">
+    <div class="c" style="top:110px"><div class="h2" style="font-size:64px">Per month</div></div>
+    <div style="position:absolute;left:220px;top:260px;width:1480px">
+      <div class="bar-row" style="top:0"><div class="bar-name">Simplify+</div><div class="bar-fill" id="bS" style="width:0;background:linear-gradient(90deg,#ff8a7a,#ff5d6c)">$39.99</div></div>
+      <div class="bar-row" style="top:120px"><div class="bar-name">Jobright</div><div class="bar-fill" id="bJ" style="width:0;background:linear-gradient(90deg,#ff8a7a,#ff5d6c)">$39.99</div></div>
+      <div class="bar-row" style="top:240px"><div class="bar-name" style="color:var(--mint)">Appli</div><div class="bar-fill" id="bA" style="width:0;background:linear-gradient(90deg,var(--mint),var(--lime));padding-right:0"></div><div id="bAl" style="margin-left:22px;font-size:32px;font-weight:800;color:var(--mint);opacity:0">≈ $1 <span style="font-weight:500;color:#8fb5a6;font-size:26px">even at 20 applications a day</span></div></div>
+    </div>
+    <div class="c" style="top:650px"><div class="sub" id="saveL" style="opacity:0;font-size:38px;color:#cfe9de">Back in your pocket, every year:</div></div>
+    <div class="c" style="top:720px"><div class="big grad" id="save" style="opacity:0;font-size:200px;display:inline-block">$<span id="saveN">0</span></div></div>
+    <div class="c" style="top:1020px"><div class="small">vs one $39.99/mo plan. Appli cost from one real run of 20 applications; varies with the models you pick. Competitor prices: listed plans, Oct 2026.</div></div>
+  </div>
+</section>
+
+<!-- S6 FEATURES 50.2–56.4 -->
+<section class="scene" data-scene="50.2,56.4">
+  <div class="c" style="top:90px"><div class="h2" data-in="50.3,0.5,up" style="font-size:60px">Built to be <span class="grad">safe by default</span></div></div>
+  <div class="tile" data-in="50.7,0.5,pop" style="left:150px;top:240px"><div class="ic"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#05281c" stroke-width="2.6" stroke-linecap="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></div><h3>Never clicks Submit</h3><p>Network and page guards cancel any submission while it fills.</p></div>
+  <div class="tile" data-in="50.85,0.5,pop" style="left:700px;top:240px"><div class="ic"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#05281c" stroke-width="2.6" stroke-linecap="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M8 13h8M8 17h5"/></svg></div><h3>Sends your best resume</h3><p>Every resume scored per posting. Under 80%? A tailored one is drafted.</p></div>
+  <div class="tile" data-in="51.0,0.5,pop" style="left:1250px;top:240px"><div class="ic"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#05281c" stroke-width="2.6" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg></div><h3>Only your facts</h3><p>Answers come from your profile and saved answers. Never guessed.</p></div>
+  <div class="tile" data-in="51.15,0.5,pop" style="left:150px;top:530px"><div class="ic"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#05281c" stroke-width="2.6" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/></svg></div><h3>Skips dead ends</h3><p>No sponsorship, citizens only, clearance required, or closed.</p></div>
+  <div class="tile" data-in="51.3,0.5,pop" style="left:700px;top:530px"><div class="ic"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#05281c" stroke-width="2.6" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg></div><h3>Finds new postings</h3><p>Job boards and the SimplifyJobs lists, already scored for you.</p></div>
+  <div class="tile" data-in="51.45,0.5,pop" style="left:1250px;top:530px"><div class="ic"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#05281c" stroke-width="2.6" stroke-linecap="round"><path d="M4 19V9M10 19V5M16 19v-7M22 19H2"/></svg></div><h3>Tracks the rest</h3><p>Live progress, streaks and every application on one dashboard.</p></div>
+</section>
+
+<!-- S7 CTA 56.4–62 -->
+<section class="scene" data-scene="56.4,62.5">
+  <div class="c" style="top:190px"><img src="logo.svg" data-in="56.6,0.8,spin" style="width:150px;height:150px;border-radius:42px;box-shadow:0 0 120px rgba(46,245,176,.5)"></div>
+  <div class="c" style="top:380px"><div class="h1" data-in="56.9,0.6,up" style="font-size:110px">20 applications. <span class="grad">3 cents.</span></div></div>
+  <div class="c" style="top:530px"><div class="sub" data-in="57.3,0.6,up" style="font-size:44px;color:#cfe9de">Resumes tailored by your own Claude Code. You hit Submit.</div></div>
+  <div class="c" style="top:690px"><span class="pill" data-in="57.9,0.6,pop" style="background:linear-gradient(90deg,var(--mint),var(--lime));color:#05281c;font-size:36px;padding:22px 44px">Building Appli in public. Follow along →</span></div>
+</section>
+</div>
+
+<script>
+const clamp=(x)=>Math.max(0,Math.min(1,x));
+const prog=(t,a,d)=>clamp((t-a)/d);
+const eo=(x)=>1-Math.pow(1-x,3);
+const eio=(x)=>x<.5?4*x*x*x:1-Math.pow(-2*x+2,3)/2;
+const eb=(x)=>{const c1=1.70158,c3=c1+1;return 1+c3*Math.pow(x-1,3)+c1*Math.pow(x-1,2)};
+const $=(id)=>document.getElementById(id);
+const ins=[...document.querySelectorAll('[data-in]')].map(el=>{const [a,d,k]=el.dataset.in.split(',');return {el,a:+a,d:+d,k}});
+const scenes=[...document.querySelectorAll('[data-scene]')].map(el=>{const [a,b]=el.dataset.scene.split(',').map(Number);return {el,a,b}});
+
+const TERM=[
+  [0.0,'<span class="p">appli ▸</span> Tailor resume · <span class="k">Quartz Pay</span> · SWE, Payments'],
+  [0.6,'<span class="p">appli ▸</span> Claude Code found → <span class="cl">using your Claude login</span>'],
+  [1.2,'<span class="m">$</span> <span class="cl">claude</span> -p --output-format json --tools "" \\', true],
+  [2.2,'      --no-session-persistence --effort high', true],
+  [3.0,'<span class="m">  ↳ plan + write + self-review in one pass</span>'],
+  [3.5,'<span class="m">  ↳ every bullet quotes your experience bank</span>'],
+  [4.1,'<span class="p">appli ▸</span> bank resume (Claude, one pass): 3 bullets rewritten'],
+  [4.8,'<span class="ok">✓ match 68% → 92%</span>     <span class="cl">API key used: none</span>'],
+];
+const T0=22.5;
+function typed(html,n){ // reveal first n visible chars of an html string
+  let out='',c=0,i=0;while(i<html.length&&c<n){if(html[i]==='<'){const j=html.indexOf('>',i);out+=html.slice(i,j+1);i=j+1;continue}if(html[i]==='&'){const j=html.indexOf(';',i);out+=html.slice(i,j+1);i=j+1;c++;continue}out+=html[i++];c++}
+  const opens=(out.match(/<span[^>]*>/g)||[]).length,closes=(out.match(/<\/span>/g)||[]).length;return out+'</span>'.repeat(Math.max(0,opens-closes));
+}
+const vis=(h)=>h.replace(/<[^>]+>/g,'').length;
+
+function seek(t){
+  // background drift
+  $('b1').style.transform=`translate(${-200+Math.sin(t*.25)*220}px,${-250+Math.cos(t*.2)*120}px)`;
+  $('b2').style.transform=`translate(${1300+Math.cos(t*.22)*200}px,${500+Math.sin(t*.3)*140}px)`;
+  $('b3').style.transform=`translate(${700+Math.sin(t*.17)*300}px,${700+Math.cos(t*.27)*100}px)`;
+  $('grid').style.transform=`translateY(${(t*14)%64}px)`;
+  for(const s of scenes){const i=eo(prog(t,s.a,.45)),o=1-eo(prog(t,s.b-.45,.45));const v=Math.min(i,o);
+    s.el.style.opacity=v;s.el.style.transform=`scale(${0.97+0.03*i + (1-o)*0.04})`;s.el.style.filter=v<1?`blur(${(1-v)*10}px)`:'none';}
+  for(const x of ins){const p=prog(t,x.a,x.d),e=eo(p);let tr='';
+    if(x.k==='up')tr=`translateY(${(1-e)*50}px)`;else if(x.k==='right')tr=`translateX(${(1-e)*160}px)`;
+    else if(x.k==='pop')tr=`scale(${0.6+0.4*eb(p)})`;else if(x.k==='spin')tr=`scale(${0.3+0.7*eb(p)}) rotate(${(1-e)*-120}deg)`;
+    x.el.style.opacity=e;x.el.style.transform=tr;}
+
+  // S1: price strike + countdown
+  const sp=eio(prog(t,2.4,.45));$('strike').style.transform=`scaleX(${sp})`;$('strike').style.opacity=1-prog(t,3.0,.3);
+  const cd=eio(prog(t,2.9,1.0));const v=39.99-(39.99-0.03)*cd;$('priceN').textContent=v.toFixed(2);
+  $('price').style.color=cd>0?`rgb(${234-188*cd},${255-10*cd},${246-70*cd})`:'';
+  $('price').style.textShadow=cd>.9?'0 0 80px rgba(46,245,176,.5)':'none';
+  $('priceUnit').textContent=cd>.5?'for 20 applications':'a month';$('hookTop').textContent=cd>.5?'So I built one that costs':'Auto-apply tools charge';
+
+  // S3: scroll + counter + swap captions
+  $('s3scroll').style.transform=`translateY(${-eio(prog(t,12.8,1.6))*470}px)`;
+  $('ctrN').textContent=Math.max(1,Math.min(7,1+Math.floor(prog(t,11,4)*6.99)));
+  const sw=prog(t,15.5,.4);$('s3h').parentElement.style.opacity=1-sw;
+  const rp=prog(t,17.4,.5);$('ring').style.opacity=rp*(0.75+0.25*Math.sin(t*6));$('ring').style.transform=`scale(${1+0.06*Math.sin(t*6)})`;
+
+  // S4: terminal typing
+  let html='';for(const [at,line,typing] of TERM){const st=T0+at;if(t<st)break;
+    html+=(typing?typed(line,Math.floor((t-st)*55)):line)+'\n';}
+  const blink=Math.floor(t*2.2)%2===0;$('term').innerHTML=html+(blink?'<span class="caret"></span>':'');
+  // terminal -> rings -> diff
+  const a1=prog(t,28.6,.5);$('s4a').style.opacity=1-a1;$('termWin').style.visibility=a1>=1?'hidden':'visible';$('termWin').parentElement&&($('termWin').style.filter=`opacity(${1-a1})`);
+  const b1=prog(t,29.05,.5),b2=prog(t,32.6,.5);$('s4b').style.opacity=eo(b1)*(1-b2);$('s4b').style.transform=`translateY(${(1-eo(b1))*40}px)`;
+  const ra=eio(prog(t,29.2,1.1)),rb=eio(prog(t,30.3,1.3));
+  $('rA').setAttribute('stroke-dashoffset',1194*(1-0.68*ra));$('tA').textContent=Math.round(68*ra);
+  $('rB').setAttribute('stroke-dashoffset',1194*(1-0.92*rb));$('tB').textContent=Math.round(92*rb);
+  $('arrow').setAttribute('opacity',prog(t,30.0,.4));
+  const pl=prog(t,31.5,.5);$('plus').style.opacity=pl;$('plus').style.transform=`scale(${0.6+0.4*eb(pl)})`;
+  const c1=prog(t,33.05,.6);$('s4c').style.opacity=eo(c1);$('s4c').style.transform=`translateY(${(1-eo(c1))*60}px)`;
+  $('diffz').style.transform=`translateY(${-150*eio(prog(t,33.4,3.4))}px)`;$('sweep').style.left=`${-300+eio(prog(t,33.6,2.6))*1900}px`;
+
+  // S5: money
+  const m1=eio(prog(t,39.0,1.2));$('m1').textContent=(0.03*m1).toFixed(2);
+  $('m2').textContent='0';
+  const sa=prog(t,42.7,.4);$('s5a').style.opacity=1-sa;$('s5a').style.transform=`translateY(${-sa*40}px)`;
+  const sb=prog(t,43.2,.5);$('s5b').style.opacity=eo(sb);
+  const W=1080;$('bS').style.width=`${W*eo(prog(t,43.7,.9))}px`;$('bJ').style.width=`${W*eo(prog(t,43.95,.9))}px`;
+  $('bA').style.width=`${Math.max(0,W*(1/39.99)*eo(prog(t,44.5,.6)))}px`;$('bAl').style.opacity=prog(t,44.8,.4);
+  $('bS').style.color=$('bS').offsetWidth>150?'#1a0e0e':'transparent';$('bJ').style.color=$('bJ').offsetWidth>150?'#1a0e0e':'transparent';
+  $('saveL').style.opacity=prog(t,45.6,.4);
+  const sv=prog(t,46.0,.4);$('save').style.opacity=sv;$('save').style.transform=`scale(${0.7+0.3*eb(sv)})`;
+  $('saveN').textContent=Math.round(468*eio(prog(t,46.0,1.6)));
+}
+window.seek=seek;seek(0);
+</script>
+</body></html>
