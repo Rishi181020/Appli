@@ -383,6 +383,22 @@ def _has_latex() -> bool:
         return False
 
 
+OFF_TARGET_MATCH = 0.20  # below this match AND a title none of your resumes fit: skipped (no slot, no tailoring)
+
+
+def title_fits(role: str) -> bool:
+    """The job title fits one of your resumes (its title keywords) or your Find jobs titles (with related titles).
+    No titles anywhere: everything fits, nothing is skipped for its title."""
+    from .jobsearch import expand_titles, load_prefs, title_matches
+
+    low = f" {role.lower()} "
+    if any(re.search(rf"(?<![a-z]){re.escape(k.lower())}(?![a-z])", low)
+           for kws in config.RESUME_TITLE_KEYWORDS.values() for k in kws):
+        return True
+    titles = load_prefs().titles
+    return not titles or title_matches(role, expand_titles(titles))
+
+
 def _choose_resume(job: dict, profile: Profile) -> tuple[str, Path, dict | None, str]:
     """-> (key, pdf path, match info, action) where action is 'fill' or 'tailor'."""
     version = resume_select.resume_version()
@@ -487,6 +503,9 @@ def process(pw, ctx, job: dict, profile: Profile, bank: dict[str, str], known: l
         step("resume chosen")
         if match_info:
             _save_match(jid, match_info)
+        if match_info and match_info["pct"] < OFF_TARGET_MATCH and not title_fits(job.get("role") or ""):
+            return give_up("skipped", f"Off target: your best resume matches only {match_info['pct']:.0%} and the title "
+                                      "fits none of your resumes or search titles")
         if action == "tailor":
             report("tailoring", f"Best match is {match_info['pct']:.0%}, below the {config.RESUME_MATCH_THRESHOLD:.0%} target. Drafting a tailored resume; this application waits for your approval.", job)
             update(jid, status="tailoring", resume_review=None,

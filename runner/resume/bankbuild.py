@@ -1,5 +1,7 @@
 """Build an honest, tailored resume for one job from the experience bank.
 
+With Claude Code installed and signed in, plan + write + self-review are one Claude call (`claude -p`); otherwise:
+
     plan      the planner reads the posting and the bank, and decides the layout: 1 or 2 pages, which sections in which
               order, which entries go in and how many bullets each gets
     write     the writer drafts every bullet in the posting's terminology; each bullet quotes the bank passage it's from
@@ -118,18 +120,23 @@ def template_sections(base_src: str | None, titles: list[str] | None = None) -> 
     return out
 
 
-def plan(job: dict, info: dict, entries: list[dict], profile, headings: dict[str, str] | None = None,
-         template: list[str] | None = None) -> dict:
-    headings = headings or {}
-    template = template or []
+def _plan_user(job: dict, info: dict, entries: list[dict], profile, headings: dict[str, str], text_len: int) -> str:
     listing = [{"id": e["id"], "kind": e["kind"], "title": e["title"], "org": e["org"],
-                "dates": f"{e['start']} - {e['end']}".strip(" -"), "tags": e["tags"][:12], "text": e["text"][:500]}
+                "dates": f"{e['start']} - {e['end']}".strip(" -"), "tags": e["tags"][:12], "text": e["text"][:text_len]}
                for e in entries if e["kind"] not in ("skills", "narrative", "education")]
-    user = (f"JOB: {job.get('role')} at {job.get('company')}\nCANDIDATE: {candidate_level(profile)}\n"
+    return (f"JOB: {job.get('role')} at {job.get('company')}\nCANDIDATE: {candidate_level(profile)}\n"
             f"REQUIREMENTS (* = required): {', '.join(('*' if t.get('required') else '') + t['term'] for t in info.get('terms', []))}\n\n"
             f"YOUR HEADINGS (from the candidate's own resume): {json.dumps(headings, ensure_ascii=False)}\n\n"
             f"POSTING:\n{job.get('description', '')[:5000]}\n\nBANK ENTRIES:\n{json.dumps(listing, ensure_ascii=False)}")
-    p = llm.chat_json(_PLAN_SYSTEM, user, model=config.model("write"), max_tokens=4000, purpose="bank resume: plan")
+
+
+def plan(job: dict, info: dict, entries: list[dict], profile, headings: dict[str, str] | None = None,
+         template: list[str] | None = None, raw: dict | None = None) -> dict:
+    """raw: a layout another model already chose (Claude's single pass): only cleaned up here, no planner call."""
+    headings = headings or {}
+    template = template or []
+    p = raw if raw is not None else llm.chat_json(_PLAN_SYSTEM, _plan_user(job, info, entries, profile, headings, 500),
+                                                  model=config.model("write"), max_tokens=4000, purpose="bank resume: plan")
     kind_of = {e["id"]: e["kind"] for e in entries}
     usable = {i for i, k in kind_of.items() if k in _KIND_SECTION}
 
@@ -291,6 +298,106 @@ def critique(job: dict, info: dict, plan_: dict, draft: dict, by_id: dict, skill
     return {"verdict": out.get("verdict", "revise"), "score": out.get("score"), "issues": issues, "model": model}
 
 
+# ---- plan + write + self-review in one pass (Claude, through the local Claude Code CLI) ----------------------------
+_CLAUDE_SYSTEM = ("""You are the candidate's resume-tailoring assistant. From the job description and their experience
+bank, build a complete resume for THIS job in one pass: first the layout, then every bullet.
+
+Align your skills and experience with the job description. Tie your work directly to the role qualifications (and
+don't forget to include data).
+Ensure you meet the minimum qualifications (MQs) for the role you're applying to, and your resume clearly demonstrates
+alignment with the MQs.
+Be specific about projects you've worked on or managed. What was the outcome? How did you measure success? When in
+doubt, lean on the formula, "accomplished [X] as measured by [Y], by doing [Z]."
+If you've had a leadership role, tell us about it. How big was the team? What was the scope of your work?
+If you're a recent university graduate or have limited work experience, include school-related projects or coursework
+that demonstrate relevant skills and knowledge.
+
+RESULTS ONLY: every bullet states a result, nothing else. No duties, no descriptions of how a feature is organized, no
+config names. A bullet with no measured result names the concrete outcome: what now works, for whom, that didn't before.
+
+NO REPEATS: each number, fact and achievement appears once on the whole resume, even when the entry repeats it. A scale,
+accuracy or cost figure used in one bullet can't appear in any other, and no two bullets cover the same system or fix.
+
+TRUTH (code checks every bullet; anything that fails is deleted from the resume):
+- New wording, real facts. Every bullet states only what its entry's text says. `evidence` must be a passage copied
+  word for word from that entry's text (one or two consecutive sentences) that supports everything in the bullet.
+- Numbers, metrics, scale, team size and outcomes only when they appear in that evidence. Never round up or add one.
+- Use the posting's exact terminology where the evidence genuinely shows that skill; never claim a skill, tool,
+  qualification or responsibility the evidence doesn't show.
+
+Start each bullet with a strong past-tense verb (present tense for a current role). About 180-230 characters: two lines
+in LaTeX, never three. Bold (**...**) the significant numbers and metrics with their unit so a recruiter skimming sees
+the impact, plus at most one key technology term the posting asks for; nothing else bold.
+
+LAYOUT
+- One page unless the posting is research / PhD-level and the bank has substantial research for it. One-page fit
+  matters: pick fewer, stronger entries over many thin ones.
+- Sections in the order that best sells this candidate for THIS job; Education first for students and new grads,
+  Skills always last. Section types: education, experience, research, projects, publications, leadership, awards,
+  skills. For a type listed under YOUR HEADINGS, use that heading exactly. Education and Skills are filled in by code
+  from the candidate's own resume: give them no entries.
+- Pick bank entries by id, most relevant first. Give each a bullet count (1-5); the current or most recent job gets the
+  most (3-5). "reserve": next-best entries, added only if the page has room.
+- A project entry's `org` is a prize it won (e.g. "2nd Place, ... Hackathon"): it's printed on the project's heading
+  line, so don't repeat it in a bullet. An awards section, when there's room, lists award entries that aren't already
+  shown on a picked project.
+- Counts the candidate's instructions give (e.g. "exactly 2 projects") are hard limits: never exceed them, and put no
+  entry of that kind in reserve.
+- Skills: compact and specific to this posting, as group lines ("Languages", "Frameworks", "Cloud & Tools"...), only
+  skills the bank or profile shows. Code merges them into the candidate's own Skills section. Real skill names only.
+
+Write bullets for every entry you put in a section, plus up to 2 `spare` bullets per entry from material you didn't
+use (added only if the page has room), and bullets for your first """ + str(RESERVE_WRITTEN) + """ reserve entries.
+Before answering, review your draft as a skeptical hiring manager and strict fact-checker (unsupported or inflated
+claims, numbers not in the evidence, requirements the bank supports that no bullet shows, vague or repeated bullets,
+AI-sounding wording) and fix everything you find.
+""" + STYLE + """
+Return JSON: {"pages": 1|2, "rationale": "<two sentences on the layout choice>",
+"sections": [{"type": str, "heading": str, "entries": [{"id": str, "bullets": int}]}],
+"reserve": [{"id": str, "bullets": int}],
+"entries": {"<entry id>": {"bullets": [{"text": str, "evidence": str, "terms": [str]}],
+"spare": [{"text": str, "evidence": str, "terms": [str]}]}}, "skills": [{"group": str, "items": "comma, separated"}]}""")
+
+
+def claude_build(job: dict, info: dict, entries: list[dict], profile, headings: dict[str, str], template: list[str],
+                 skills_source: str) -> tuple[dict, dict]:
+    """Layout and bullets from one Claude call -> (plan, draft), the same shapes plan() and write() give."""
+    user = (_plan_user(job, info, entries, profile, headings, 12000)
+            + f"\n\nSKILLS IN THE BANK / PROFILE:\n{skills_source[:3000]}")
+    mine = config.USER.tailor_prompt if config.USER else ""
+    system = _CLAUDE_SYSTEM + (f"\n\nTHE CANDIDATE'S OWN INSTRUCTIONS (follow them; the TRUTH rules still win):\n{mine}"
+                               if mine else "")
+    for attempt in (1, 2):
+        raw = _resolve_ids(llm.claude_json(system, user, purpose="bank resume: claude single pass"), entries)
+        draft = {"entries": raw.get("entries") if isinstance(raw.get("entries"), dict) else {},
+                 "skills": raw.get("skills") if isinstance(raw.get("skills"), list) else []}
+        p = plan(job, info, entries, profile, headings, template, raw=raw)
+        if any((draft["entries"].get(x["id"]) or {}).get("bullets") for s in p["sections"] for x in s["entries"]):
+            return p, draft
+        # an answer naming no real bank entry would build an empty page: keep it for a look, ask once more
+        (config.ROOT / "out" / f"claude-bank-empty-{job.get('id')}-{attempt}.json").write_text(
+            json.dumps(raw, indent=1, ensure_ascii=False), encoding="utf-8")
+    raise RuntimeError("Claude's resume draft used none of your bank entries twice; try Build again")
+
+
+def _resolve_ids(raw: dict, entries: list[dict]) -> dict:
+    """Map entries Claude named by title (or a mangled id) back to their bank ids, so its bullets aren't thrown away."""
+    alias: dict[str, str] = {}
+    for e in entries:
+        for k in (e["id"], e["title"], f"{e['title']} {e['org']}", f"{e['title']} at {e['org']}"):
+            alias.setdefault(_norm(k), e["id"])
+    fix = lambda i: alias.get(_norm(str(i or "")), i)  # noqa: E731
+    for x in [x for s in raw.get("sections") or [] for x in s.get("entries") or []] + list(raw.get("reserve") or []):
+        if isinstance(x, dict):
+            x["id"] = fix(x.get("id"))
+    got = raw.get("entries")
+    if isinstance(got, list):  # [{"id": ..., "bullets": [...]}]
+        got = {x.get("id"): x for x in got if isinstance(x, dict) and x.get("id")}
+    if isinstance(got, dict):
+        raw["entries"] = {fix(k): v for k, v in got.items()}
+    return raw
+
+
 # ---- 4. verify (code, not a model) --------------------------------------------------------------------------------
 _NUM = re.compile(r"\d[\d,.]*\+?%?")
 
@@ -414,7 +521,8 @@ def merge_skills(base_lines: list[dict], writer_lines: list[dict], terms: list[d
 
     for g in writer_lines:  # already checked against the bank by verify_skills
         target = next((ln for ln in lines if match.norm_text(ln["group"]) == match.norm_text(str(g.get("group") or ""))), None)
-        for item in _items(g):
+        # the model's "async Python (PostgreSQL, Redis)" is several skills: each is checked against the resume on its own
+        for item in [x.strip() for x in re.split(r"[,()]", str(g.get("items") or "")) if x.strip()]:
             if not on_resume(item):
                 add(target or _line_for(lines, *match.norm_text(str(g.get("group") or "")).split()), item)
 
@@ -450,6 +558,22 @@ def merge_skills(base_lines: list[dict], writer_lines: list[dict], terms: list[d
 # ---- 5. render -----------------------------------------------------------------------------------------------------
 _ESC = {"\\": r"\textbackslash{}", "&": r"\&", "%": r"\%", "$": r"\$", "#": r"\#", "_": r"\_", "{": r"\{", "}": r"\}",
         "~": r"\textasciitilde{}", "^": r"\textasciicircum{}", "|": r"$|$", "<": r"$<$", ">": r"$>$"}
+
+
+# a metric in a bullet: 70%, 100+, 1,500, 5K, 3x, $2.5M; not part of a name (C3.js, GPT-4o, EC2) and not a bare digit
+_METRIC = re.compile(r"(?<![\w.$/-])\$?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:%|\+|[KMB]\b|x\b)*(?![\w%+])")
+
+
+def bold_numbers(text: str) -> str:
+    """**Bold** every significant number so a skimming recruiter sees the impact (spans already bold are left alone).
+    Applied when the page is drawn, so every bullet gets it (pinned, edited, rebuilt) and the saved text stays as is."""
+    def one(m: re.Match) -> str:
+        s = m.group(0)
+        digits = re.sub(r"\D", "", s)
+        if (len(digits) < 2 and s == digits) or re.fullmatch(r"(19|20)\d\d", s):  # "4 agents", a year
+            return s
+        return f"**{s}**"
+    return "".join(p if p.startswith("**") else _METRIC.sub(one, p) for p in re.split(r"(\*\*.+?\*\*)", text or ""))
 
 
 def esc(s: str) -> str:
@@ -545,7 +669,7 @@ def render(plan_: dict, draft: dict, by_id: dict, profile, base_src: str | None)
             bullets = (draft.get("entries", {}).get(x["id"]) or {}).get("bullets", [])
             if not e or not bullets:
                 continue
-            items = "\n".join(f"        \\resumeItem{{{esc(b['text'])}}}" for b in bullets)
+            items = "\n".join(f"        \\resumeItem{{{esc(bold_numbers(b['text']))}}}" for b in bullets)
             if e["kind"] in ("experience", "research", "leadership"):
                 head = (f"    \\resumeSubheading\n      {{{esc(e['org'] or e['title'])}}}{{\\small{{{esc(e['location'])}}}}}\n"
                         f"      {{{esc(e['title'] if e['org'] else '')}}}{{{_dates(e)}}}")
@@ -553,7 +677,8 @@ def render(plan_: dict, draft: dict, by_id: dict, profile, base_src: str | None)
                 link = e.get("link") or template_links().get(_project_key(e["title"]), "")
                 right = f"\\href{{{link}}}{{\\textbf{{[Link]}}}}" if link.startswith("http") else _dates(e)
                 name = esc(e["title"]) + (f", {esc(e['org'])}" if e["kind"] == "publication" and e["org"] else "")
-                head = f"    \\resumeProjectHeading\n      {{\\textbf{{{name}}}}}{{{right}}}"
+                prize = f" $|$ \\textit{{\\small {esc(e['org'])}}}" if e["kind"] == "project" and e["org"] else ""  # a project's org is a prize it won
+                head = f"    \\resumeProjectHeading\n      {{\\textbf{{{name}}}{prize}}}{{{right}}}"
             blocks.append(f"{head}\n      \\resumeItemListStart\n{items}\n      \\resumeItemListEnd")
         if blocks:
             parts.append(f"\\section{{{esc(s['heading'])}}}\n  \\resumeSubHeadingListStart\n" + "\n\n".join(blocks)
@@ -568,9 +693,12 @@ MIN_BULLETS = 2  # trimming to fit never takes an entry below this; past that th
 def tex_maker(profile, base_src: str | None):
     """make(plan, draft, by_id) -> (LaTeX source, compiled PDF): what fit / fill lay out with. word.bank_maker is the
     Word counterpart (the person's own .docx, page length estimated)."""
+    from .build import export_style
+
+    style = export_style()
+
     def make(plan_: dict, draft: dict, by_id: dict):
-        src = render(plan_, draft, by_id, profile, base_src)
-        return src, tex.compile_tex(src)
+        return tex.compile_styled(render(plan_, draft, by_id, profile, base_src), style)
     return make
 
 
@@ -639,9 +767,92 @@ def _try(plan_, draft, by_id, make):
     return src, comp, comp.ok and comp.pages <= plan_["pages"]
 
 
+def _repeats(a: str, b: str) -> bool:
+    """Two bullets saying the same thing: same opening ("Led the full development lifecycle...") or mostly the same words."""
+    a, b = _norm(a.replace("**", "")), _norm(b.replace("**", ""))
+    return a.split()[:5] == b.split()[:5] or SequenceMatcher(None, a, b).ratio() >= 0.6
+
+
+_FACT = re.compile(r"(\d[\d,.]*[km]?\+?%?)\s+([a-z]+)")
+
+
+def _facts(text: str) -> set[tuple[str, str]]:
+    """A figure and what it counts: ("70,000", "documents"). "100+ APIs" and "100+ clients" are different facts."""
+    return {f for f in _FACT.findall(text.replace("**", "").lower()) if len(f[0]) >= 3}
+
+
+def drop_repeats(plan_: dict, draft: dict) -> None:
+    """A bullet that repeats one earlier on the page goes (the first one stays), and so does a spare that repeats one
+    on the page, so filling never adds it back. Catches the model's repeats and a reverted line equal to a merged one."""
+    kept: list[str] = []
+    facts: set = set()
+
+    def again(b: dict) -> bool:  # your own words may reuse a figure; the model's may not
+        return any(_repeats(b["text"], k) for k in kept) or (not b.get("edited") and bool(_facts(b["text"]) & facts))
+
+    for s in plan_["sections"]:
+        for x in s["entries"]:
+            block = (draft.get("entries") or {}).get(x["id"])
+            if not block:
+                continue
+            ok = []
+            for b in block.get("bullets", []):
+                if not again(b):
+                    ok.append(b)
+                    kept.append(b["text"])
+                    facts |= _facts(b["text"])
+            block["bullets"] = ok
+    for block in (draft.get("entries") or {}).values():
+        block["spare"] = [b for b in block.get("spare") or [] if not again(b)]
+
+
+def _balanced(s: str) -> str:
+    """Drop brackets that don't pair up: a stray ")" makes every comma before it look bracketed, so the line won't split."""
+    out, opened = list(s), []
+    for i, c in enumerate(s):
+        if c == "(":
+            opened.append(i)
+        elif c == ")":
+            if opened:
+                opened.pop()
+            else:
+                out[i] = ""
+    for i in opened:
+        out[i] = ""
+    return "".join(out)
+
+
+def dedupe_skills(lines: list[dict], base_lines: list[dict] | None = None) -> list[dict]:
+    """Each skill once in the whole Skills section, and no stray bracket ("Redis/ARQ)"). A skill your own resume lists
+    stays on its line there (PostgreSQL under Databases, not wherever it was added again); otherwise the first wins."""
+    key_of = lambda s: match.norm_text(s).strip()  # noqa: E731
+    groups = {key_of(ln["group"]) for ln in lines or []}
+    home = {key_of(i): key_of(ln["group"]) for ln in base_lines or [] for i in _items(ln) if key_of(ln["group"]) in groups}
+    split = [(ln, _items({"items": _balanced(str(ln.get("items") or ""))})) for ln in lines or []]
+    detailed = {key_of(i.split("(")[0]) for _, its in split for i in its if "(" in i}  # "AWS (EC2, S3)" beats a bare "AWS"
+    seen, out = set(), []
+    for ln, its in split:
+        items = []
+        for item in its:
+            key = key_of(item)
+            if "(" not in item and key in detailed:
+                continue
+            if key in home and home[key] != key_of(ln["group"]):
+                continue
+            if key and key not in seen:
+                seen.add(key)
+                items.append(item)
+        if items:
+            out.append({**ln, "items": ", ".join(items)})
+    return out
+
+
 def fit_and_fill(plan_: dict, draft: dict, by_id: dict, make):
     """Trim to the planned pages, then fill the last page while it has room: spare bullets of the entries on it first
     (most relevant entry first), then the next-best entries from the reserve."""
+    drop_repeats(plan_, draft)
+    if draft.get("skills"):
+        draft["skills"] = dedupe_skills(draft["skills"], plan_.get("base_skills"))
     src, comp, trimmed = fit(plan_, draft, by_id, make)
     if not comp.ok:
         return src, comp, trimmed
@@ -708,22 +919,26 @@ def skills_source(entries: list[dict], profile) -> str:
 def _base(base_key: str | None, entries: list[dict], profile) -> dict:
     """The person's own resume this one is laid out like: their Word file when the chosen resume has one (edited in
     place, no LaTeX needed), else their LaTeX (or a clean default)."""
+    from .build import export_style
+
     docx = config.RESUME_DOCX.get(base_key)
     if docx:
         from . import word
 
         return {"format": "docx", "src": None, "titles": word.section_titles(docx), "text": word.parse(docx)["text"],
-                "make": word.bank_maker(docx, entries)}
+                "make": word.bank_maker(docx, entries, export_style())}
     base_tex = config.RESUME_TEX.get(base_key) or next(iter(config.RESUME_TEX.values()), None)
     src = base_tex.read_text(encoding="utf-8") if base_tex else None
     return {"format": "tex", "src": src, "titles": None, "text": tex.document_plain(src) if src else "",
             "make": tex_maker(profile, src)}
 
 
-def build_draft(job: dict, info: dict, profile, base_key: str | None = None, log=print) -> dict:
-    """Plan -> write -> adversarial review + revise (x2) -> verify -> render + fit. Saves the PDF next to the job's other
-    tailored files; returns the resume_edits payload for Resume review."""
+def build_draft(job: dict, info: dict, profile, base_key: str | None = None, log=print, folder=None) -> dict:
+    """Plan + write in one Claude pass when Claude Code is installed (else plan -> write -> adversarial review + revise
+    x2 with the usual models) -> verify -> render + fit. Saves the PDF next to the job's other
+    tailored files (or in `folder`: a Tailor resume draft); returns the resume_edits payload for Resume review."""
     from . import build as resume_build
+    from . import history
     from .select import resume_version
 
     d = bank.load()
@@ -736,12 +951,20 @@ def build_draft(job: dict, info: dict, profile, base_key: str | None = None, log
     sk_src = skills_source(entries, profile)
 
     template = template_sections(base["src"], base["titles"])
-    p = plan(job, info, entries, profile, own_headings(base["src"], base["titles"]), template)
-    p["base_skills"] = base_skill_lines(base_key)
-    log(f"    bank resume: {p['pages']} page(s), sections {', '.join(s['heading'] for s in p['sections'])}")
-    draft = pin(write(job, info, p, by_id, sk_src), p, by_id)
+    headings = own_headings(base["src"], base["titles"])
     reviews = []
-    for round_ in (1, 2, 3):  # up to two revisions; the last review is of the final draft, for Resume review
+    # Claude writes the whole resume in one pass (the code checks below still apply). Its failure is an error, never a
+    # silent switch to the other models: the person chose Claude.
+    by_claude = llm.claude_available()
+    if by_claude:
+        p, draft = claude_build(job, info, entries, profile, headings, template, sk_src)
+    else:
+        p = plan(job, info, entries, profile, headings, template)
+    p["base_skills"] = base_skill_lines(base_key)
+    log(f"    bank resume{' (Claude, one pass)' if by_claude else ''}: {p['pages']} page(s), "
+        f"sections {', '.join(s['heading'] for s in p['sections'])}")
+    draft = pin(draft if by_claude else write(job, info, p, by_id, sk_src), p, by_id)
+    for round_ in () if by_claude else (1, 2, 3):  # up to two revisions; the last review is of the final draft
         checked, dropped = verify(draft, by_id)
         r = critique(job, info, p, checked, by_id, sk_src)
         r["issues"] = [i for i in r["issues"] if not by_id.get(i.get("entry"), {}).get("pinned")]  # your own words
@@ -755,8 +978,10 @@ def build_draft(job: dict, info: dict, profile, base_key: str | None = None, log
     final, dropped = verify(draft, by_id)
     shown = " ".join(b["text"] for s in p["sections"] for x in s["entries"]
                      for b in (final["entries"].get(x["id"]) or {}).get("bullets", []))
+    declined = {match.norm_text(x) for x in d.get("declined", [])}  # skills you said you don't have
     final["skills"], skills_added, skills_excluded = merge_skills(
-        p["base_skills"], verify_skills(final.get("skills") or [], sk_src), info.get("terms") or [],
+        p["base_skills"], verify_skills(final.get("skills") or [], sk_src),
+        [t for t in info.get("terms") or [] if match.norm_text(t["term"]) not in declined],
         base["text"], shown, sk_src + "\n" + "\n".join(e["text"] for e in entries))
     if skills_added:
         log(f"    skills added from the posting: {', '.join(a['skill'] for a in skills_added if not a.get('suggested'))}")
@@ -764,11 +989,9 @@ def build_draft(job: dict, info: dict, profile, base_key: str | None = None, log
     if not comp.ok:
         raise RuntimeError(f"LaTeX didn't compile: {comp.log[-300:]}")
 
-    folder = config.TAILORED_DIR / str(job["id"])
+    folder = folder or config.TAILORED_DIR / str(job["id"])
     folder.mkdir(parents=True, exist_ok=True)
-    for old in folder.glob("*"):
-        if old.is_file():
-            old.unlink()
+    history.snapshot(folder)  # the previous build stays restorable
     stem = resume_build.file_stem(job.get("role"))
     is_docx = base["format"] == "docx"
     out_file = folder / f"{stem}{'.docx' if is_docx else '.pdf'}"

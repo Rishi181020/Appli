@@ -101,7 +101,8 @@ def load_profile(path: Path, resume_tex: Path | None = None) -> Profile:
     name = find(r"^#\s+(.+)$", 1, re.M)
     if not name:
         raise SystemExit(f"{path}: the first line must be '# Your Name'")
-    first, _, last = name.partition(" ")
+    # the last word is the surname; middle names go with the first name ("Rishi Rugweda" / "Dixit")
+    first, _, last = name.rpartition(" ") if " " in name else (name, "", "")
     email = find(r"[\w.+-]+@[\w-]+\.[\w.]+")
     phone = find(r"\+\d[\d ()-]{8,}\d")
     city = find(r"^([A-Za-z .'-]+,\s*[A-Z]{2})\s*·", 1, re.M)

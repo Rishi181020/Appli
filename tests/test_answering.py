@@ -42,7 +42,7 @@ job = {"role": "Software Engineer", "company": "Acme"}
 bank = {}
 res = answering.answer_fields(fields, profile, bank, job, "resume text", use_jev=False)
 
-assert res.values["first"] == "Rishi" and res.tiers["first"] == "direct"
+assert res.values["first"] == "Rishi Rugweda" and res.tiers["first"] == "direct"
 assert res.values["email"] == profile.email
 assert res.values["auth"] == "Yes" and res.tiers["auth"] == "direct"
 assert res.values["spons"] == "Yes" and res.tiers["spons"] == "direct"  # candidate needs sponsorship
@@ -111,3 +111,12 @@ assert sch.values["s2"] == "Vishwakarma Institute of Information Technology" and
 assert sch.values["f2"] == "Information Technology" and sch.values["e2"] == "2023"
 assert "s3" not in sch.values, "a third block has no profile entry and stays empty"
 print("education checks passed")
+
+# ---- "previously worked for <company>?": No from your work history, unless the company is one of yours ----------
+_q = Field("pw", "Were you previously employed at ZT Systems?", "radio", ["Yes", "No"], True)
+assert answering.past_employer_no(_q, profile, {"company": "ZT Systems"}) == "No"
+_q2 = Field("pw", "Have you previously worked for Santa Clara University?", "radio", ["Yes", "No"], True)
+assert answering.past_employer_no(_q2, profile, {"company": "Santa Clara University"}) is None, "a past employer stays yours"
+_q3 = Field("pw", "Do you have a relative who previously worked at Vizient?", "radio", ["Yes", "No"], True)
+assert answering.past_employer_no(_q3, profile, {"company": "Vizient"}) is None, "relatives stay yours"
+print("past employer checks passed")

@@ -1,5 +1,7 @@
 import argparse
 import collections
+import contextlib
+import re
 import sys
 
 from . import config
@@ -34,9 +36,13 @@ def cmd_import(args):
     from .db import dedupe_jobs, import_jobs, park_unsupported
 
     print("Resumes:", dict(collections.Counter(pick_resume(r.role)[0] for r in rows)))
-    print(import_jobs(rows))
+    result = import_jobs(rows)
+    print({k: v for k, v in result.items() if k != "ids"})
     print("Duplicate listings skipped:", dedupe_jobs())
     print("Parked unsupported-ATS rows as needs_manual:", park_unsupported())
+    if result["ids"] and not args.no_score:  # the new jobs get their match % now, not only when a run opens them
+        cmd_rescore(argparse.Namespace(ids=",".join(map(str, result["ids"])), ids_file=None, status="", unscored=True,
+                                       limit=len(result["ids"]), dry_run=False))
 
 
 def cmd_check(_args):
@@ -97,54 +103,86 @@ def cmd_ping(_args):
 
 
 def cmd_rescore(args):
-    """Recompute resume match % for existing jobs with the current ATS scoring. Never fills or changes status."""
-    from playwright.sync_api import sync_playwright
+    """Recompute resume match % for existing jobs with the current ATS scoring. Never fills or changes status.
+    Postings are read through the job site's public API (fast, in parallel); a page that needs a browser gets one."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    import httpx
 
     from . import calllog
-    from .ats import adapters
     from .db import all_jobs, sb
+    from .jobsearch import UA, Found, describe
     from .resume import select
 
     _activate()
-    if args.ids:
-        ids = {int(x) for x in args.ids.split(",")}
-        jobs = [j for j in all_jobs("id,company,role,ats,url,status,match_pct") if j["id"] in ids]
+    cols = "id,company,role,ats,url,status,match_pct"
+    if args.ids or args.ids_file:
+        with open(args.ids_file, encoding="utf-8") if args.ids_file else contextlib.nullcontext(None) as fh:
+            raw = args.ids or fh.read()
+        ids = {int(x) for x in re.split(r"[,\s]+", raw) if x.strip()}
+        jobs = [j for j in all_jobs(cols) if j["id"] in ids and j["url"]]
     else:
         wanted = set(args.status.split(","))
-        jobs = [j for j in all_jobs("id,company,role,ats,url,status,match_pct") if j["status"] in wanted and j["url"]]
+        jobs = [j for j in all_jobs(cols) if j["status"] in wanted and j["url"]]
+    if args.unscored:
+        jobs = [j for j in jobs if j.get("match_pct") is None]
     jobs = jobs[: args.limit]
-    print(f"Rescoring {len(jobs)} job(s){' (dry run: nothing saved)' if args.dry_run else ''}")
-    rows = []
-    with sync_playwright() as pw:
-        b = pw.chromium.launch(headless=True)
-        for j in jobs:
-            page = b.new_page()
-            try:
-                page.goto(adapters.urls(j["ats"], j["url"])[0], wait_until="domcontentloaded", timeout=45000)
-                page.wait_for_timeout(2000)
-                job = {**j, "description": " ".join(page.inner_text("body").split())[:6000]}
-            except Exception as e:
-                print(f"  {j['company']}: couldn't load posting ({type(e).__name__})")
-                page.close()
-                continue
-            page.close()
-            print(f"- {j['company']} - {j['role']}")
-            info = select.evaluate(job)
+    print(f"Rescoring {len(jobs)} job(s){' (dry run: nothing saved)' if args.dry_run else ''}", flush=True)
+
+    def read(j: dict) -> str:
+        with httpx.Client(timeout=20, follow_redirects=True, headers=UA) as c:
+            return describe(Found(j["url"], j["company"], j.get("role") or "", "", j["url"], j.get("ats") or "", ""), c)
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        texts = dict(zip((j["id"] for j in jobs), ex.map(read, jobs)))
+    hard = [j for j in jobs if len(texts[j["id"]]) < 300]  # rendered by JavaScript: needs a browser
+    if hard:
+        print(f"  {len(hard)} posting(s) need a browser to read", flush=True)
+        try:
+            from playwright.sync_api import sync_playwright
+
+            from .ats import adapters
+
+            with sync_playwright() as pw:
+                b = pw.chromium.launch(headless=True)
+                for j in hard:
+                    page = b.new_page()
+                    try:
+                        page.goto(adapters.urls(j["ats"], j["url"])[0], wait_until="domcontentloaded", timeout=45000)
+                        page.wait_for_timeout(2000)
+                        texts[j["id"]] = " ".join(page.inner_text("body").split())
+                    except Exception as e:
+                        print(f"  {j['company']}: couldn't load posting ({type(e).__name__})", flush=True)
+                    finally:
+                        page.close()
+                b.close()
+        except ImportError:
+            print("  (Playwright isn't installed: those are skipped)", flush=True)
+
+    def score(j: dict):
+        text = texts[j["id"]]
+        if len(text) < 300:
+            return j, None
+        return j, select.evaluate({**j, "description": text[:6000]})
+
+    rows, n = [], len(jobs)
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        for i, (j, info) in enumerate(ex.map(score, jobs), 1):
             if not info:
-                print("    no usable requirements found")
+                print(f"[{i}/{n}] {j['company']} - {j['role']}: no usable posting text", flush=True)
                 continue
             old = j.get("match_pct")
             rows.append((j["company"], old, info["pct"], info["exact_pct"]))
-            print(f"    {('–' if old is None else f'{old:.0%}')} -> {info['pct']:.0%} (exact wording {info['exact_pct']:.0%}), "
-                  f"resume {info['chosen']} | shown under another name: {', '.join(info['equivalent']) or '-'} | "
-                  f"missing: {', '.join(t for t in info['missing'] if t not in info['equivalent']) or '-'}")
+            print(f"[{i}/{n}] {j['company']} - {j['role']}: {('–' if old is None else f'{old:.0%}')} -> {info['pct']:.0%} "
+                  f"(exact wording {info['exact_pct']:.0%}), resume {info['chosen']} | missing: "
+                  f"{', '.join(t for t in info['missing'] if t not in info['equivalent']) or '-'}", flush=True)
             if not args.dry_run:
                 sb().table("jobs").update({"resume_match": info, "match_pct": info["pct"]}).eq("id", j["id"]).execute()
-        b.close()
     if rows:
         print("\nBefore -> after:")
         for c, old, new, exact in rows:
             print(f"  {c[:22]:22} {('–' if old is None else f'{old:.0%}'):>5} -> {new:4.0%}  (exact {exact:.0%})")
+    print(f"Done: {len(rows)} of {n} scored")
     print(calllog.summary())
 
 
@@ -210,6 +248,68 @@ def cmd_find(_args):
 
     _activate()
     jobsearch.search(lambda s: print(s, flush=True))
+
+
+def cmd_simplify(args):
+    """Add the newest SimplifyJobs new-grad postings (software / AI, last --days days) to your jobs, scored."""
+    from . import jobsearch
+    from .db import all_jobs, dedupe_jobs, import_jobs, park_unsupported
+
+    _activate()
+    have = set()
+    for j in all_jobs("url,dedupe_key"):
+        if j.get("url"):
+            have.add(jobsearch._key(j["url"]))
+        have.add((j.get("dedupe_key") or "").lower().rstrip("/"))
+    picks = jobsearch.simplify_picks(jobsearch.from_lists(["new_grad"], print), have, args.days)
+    if not picks:
+        print("Simplify: nothing new")
+        return
+    result = import_jobs(jobsearch.to_rows(picks))
+    dedupe_jobs()
+    park_unsupported()
+    print(f"Simplify: added {result['inserted']} new posting(s)", flush=True)
+    if result["ids"]:
+        cmd_rescore(argparse.Namespace(ids=",".join(map(str, result["ids"])), ids_file=None, status="", unscored=True,
+                                       limit=len(result["ids"]), dry_run=False))
+
+
+DIGEST_TASK = "Appli daily job search"
+
+
+def cmd_digest(args):
+    """The daily search: new strong matches show on the dashboard's activity panel. --install schedules it."""
+    import subprocess
+
+    if args.install or args.uninstall:
+        if sys.platform != "win32":  # cron does the same on macOS / Linux
+            hh, mm = (args.install or "08:00").split(":")
+            print(f"{'Remove' if args.uninstall else 'Add'} this line with `crontab -e`:\n"
+                  f"{int(mm)} {int(hh)} * * * cd '{config.ROOT}' && '{sys.executable}' -m runner digest")
+            return
+        if args.uninstall:
+            subprocess.run(["schtasks", "/Delete", "/TN", DIGEST_TASK, "/F"], check=False)
+            return
+        cmd = f'cmd /c cd /d "{config.ROOT}" && "{sys.executable}" -m runner digest'
+        subprocess.run(["schtasks", "/Create", "/SC", "DAILY", "/TN", DIGEST_TASK, "/TR", cmd, "/ST", args.install, "/F"],
+                       check=True)
+        print(f"Scheduled: every day at {args.install} (Task Scheduler, '{DIGEST_TASK}'). Undo with --uninstall.")
+        return
+    from . import jobsearch
+
+    _activate()
+    out = jobsearch.search(lambda s: print(s, flush=True))
+    d = out.get("digest") or {}
+    print(f"Digest: {d.get('count', 0)} new strong match(es)")
+
+
+def cmd_h1b(args):
+    """Load a DOL H-1B (LCA) disclosure file once: Find jobs then shows each company's past sponsorship."""
+    from . import jobsearch
+
+    _activate()
+    n = jobsearch.load_h1b(args.source, lambda s: print(s, flush=True))
+    print(f"Done: sponsorship counts for {n:,} employers. Search again to see them on Find jobs.")
 
 
 def cmd_bankbuild(args):
@@ -353,6 +453,7 @@ def main():
     p_imp.add_argument("file")
     p_imp.add_argument("--sheet", help="xlsx sheet name (default: the first)")
     p_imp.add_argument("--dry-run", action="store_true", help="Parse and summarize only")
+    p_imp.add_argument("--no-score", action="store_true", help="Don't score the new jobs against your resumes now")
     p_imp.set_defaults(fn=cmd_import)
     sub.add_parser("check", help="Verify profile and resume files").set_defaults(fn=cmd_check)
     sub.add_parser("ping", help="Test Supabase and OpenRouter credentials").set_defaults(fn=cmd_ping)
@@ -370,6 +471,16 @@ def main():
     p_sc.set_defaults(fn=cmd_screen)
     sub.add_parser("find", help="Search for relevant jobs (results appear on the dashboard's Find jobs tab)").set_defaults(
         fn=cmd_find)
+    p_dg = sub.add_parser("digest", help="Daily search: new strong matches show on the dashboard (--install HH:MM to schedule)")
+    p_dg.add_argument("--install", metavar="HH:MM", help="Run every day at this time (Windows Task Scheduler)")
+    p_dg.add_argument("--uninstall", action="store_true", help="Remove the daily task")
+    p_dg.set_defaults(fn=cmd_digest)
+    p_sj = sub.add_parser("simplify", help="Add the newest SimplifyJobs new-grad postings to your jobs (runs at startup)")
+    p_sj.add_argument("--days", type=int, default=7)
+    p_sj.set_defaults(fn=cmd_simplify)
+    p_h1 = sub.add_parser("h1b", help="Load a DOL H-1B disclosure file (.xlsx/.csv path or link) for past-sponsorship counts")
+    p_h1.add_argument("source", help="File or link from https://www.dol.gov/agencies/eta/foreign-labor/performance")
+    p_h1.set_defaults(fn=cmd_h1b)
     p_bb = sub.add_parser("bankbuild", help="Build a resume for one job from the experience bank")
     p_bb.add_argument("--id", type=int, required=True)
     p_bb.set_defaults(fn=cmd_bankbuild)
@@ -377,6 +488,8 @@ def main():
     p_rs = sub.add_parser("rescore", help="Recompute match % for existing jobs (no filling, no status change)")
     p_rs.add_argument("--status", default="ready_for_review,queued,tailoring", help="Comma-separated statuses to rescore")
     p_rs.add_argument("--ids", help="Comma-separated job ids instead of --status")
+    p_rs.add_argument("--ids-file", help="A file of job ids (comma or newline separated) instead of --status")
+    p_rs.add_argument("--unscored", action="store_true", help="Only jobs that have no match %% yet")
     p_rs.add_argument("--limit", type=int, default=100)
     p_rs.add_argument("--dry-run", action="store_true", help="Print the new scores without saving them")
     p_rs.set_defaults(fn=cmd_rescore)

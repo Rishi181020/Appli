@@ -9,7 +9,7 @@ import re
 from .. import config
 from ..db import sb
 from ..profile import load_profile
-from . import match, tailor, tex, word
+from . import history, match, tailor, tex, word
 
 _NOISE = re.compile(
     r"\b(20\d\d|new ?grads?|new graduates?|university (grad|graduate)s?|college grads?|graduates?|early[- ]career|"
@@ -32,6 +32,11 @@ def role_title(role: str | None) -> str:
     best = re.sub(r"[^A-Za-z0-9+#&./ ]+", " ", best)
     best = re.sub(r"\s+", " ", best).strip(" -&/")
     return best or "Software Engineer"
+
+
+def export_style() -> dict:
+    """The person's export style for tailored resumes (Tailor resume > Export style); {} = their own layout."""
+    return dict(config.USER.resume_style) if config.USER else {}
 
 
 def file_stem(role: str | None) -> str:
@@ -64,10 +69,11 @@ def build(job: dict, accepted: list[str], *, persist: bool = True, output_dir=No
 
     if is_docx:  # uploaded as .docx: no LaTeX, and Word re-flows the page itself
         data, text = word.apply(config.RESUME_DOCX[key], tailor.additions(chosen))
+        data = word.styled(data, export_style())
         new_src, ext = None, ".docx"
     else:
         new_src = tailor.apply(src, units, chosen)
-        comp = tex.compile_tex(new_src)
+        new_src, comp = tex.compile_styled(new_src, export_style())
         if not comp.ok:
             return {"ok": False, "error": f"LaTeX failed to compile: {comp.log[:300]}"}
         if comp.pages != 1:
@@ -81,8 +87,8 @@ def build(job: dict, accepted: list[str], *, persist: bool = True, output_dir=No
 
     folder = output_dir if output_dir is not None else config.TAILORED_DIR / str(job["id"])
     folder.mkdir(parents=True, exist_ok=True)
-    for old in folder.glob("*"):  # a rebuild replaces the previous version (the role name may have changed)
-        old.unlink()
+    # a rebuild replaces the previous version (the role name may have changed); the old one is kept in versions/
+    history.snapshot(folder, {"pct_after": edits.get("built", {}).get("pct_after")})
     stem = file_stem(job.get("role"))
     pdf_path = folder / f"{stem}{ext}"
     pdf_path.write_bytes(data)

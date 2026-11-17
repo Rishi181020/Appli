@@ -77,6 +77,7 @@ def parse(path: Path) -> dict:
         "text": "\n".join(p.text for p in paras),
         "skills_text": " ".join(u.text for u in units),
         "bullets_text": " ".join(bullets),
+        "bullets": bullets,
     }
 
 
@@ -367,10 +368,12 @@ def _lines_per_page(doc, sample: Paragraph | None) -> float:
     return height / (pt * 1.3)
 
 
-def bank_maker(path: Path, bank_entries: list[dict]):
+def bank_maker(path: Path, bank_entries: list[dict], style: dict | None = None):
     """-> make(plan, draft, by_id) -> (docx bytes, layout): the Word counterpart of render + compile for bankbuild's
     fit / fill. Word lays the page out itself, so the page count is an estimate: the person's own resume is the
     measure (its lines per page), so a 1-page resume stays about as long as theirs."""
+    from .bankbuild import bold_numbers  # bankbuild imports this module
+
     base = Document(str(path))
     secs = _sections(base)
     if not any(s["type"] in ("experience", "projects", "research") and _entries(s["body"]) for s in secs):
@@ -413,7 +416,7 @@ def bank_maker(path: Path, bank_entries: list[dict]):
                 out += head
                 for b in bullets:
                     el = copy.deepcopy(ent["bullets"][0]._element)
-                    _set_runs(el, b["text"])
+                    _set_runs(el, bold_numbers(b["text"]))
                     out.append(el)
                 out += [copy.deepcopy(b._element) for b in ent["tail"]]
             return out
@@ -462,6 +465,102 @@ def bank_maker(path: Path, bank_entries: list[dict]):
         layout = SimpleNamespace(ok=True, pages=pages, pdf=None, log="",
                                  fill=(lines - (pages - 1) * per_page) / per_page,
                                  text="\n".join(p.text for p in _paragraphs(out)))
-        return buf.getvalue(), layout
+        return styled(buf.getvalue(), style), layout
 
     return make
+
+
+# ---- export styles: the same choices as tex.styled, on the person's own Word file ---------------------------------
+def styled(data: bytes, style: dict | None) -> bytes:
+    """The .docx with the person's export style applied (each part is skipped when the file doesn't have it)."""
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.shared import Pt
+
+    from .tex import clean_style, format_dates
+
+    style = clean_style(style)
+    if not style:
+        return data
+    doc = Document(BytesIO(data))
+    paras = _paragraphs(doc)
+    first_heading = next((i for i, p in enumerate(paras) if _is_heading(p) and i > 0), len(paras))
+    if style.get("template") == "compact":
+        for s in doc.sections:
+            for side in ("left_margin", "right_margin", "top_margin", "bottom_margin"):
+                if getattr(s, side) is not None:
+                    setattr(s, side, int(getattr(s, side) * 0.8))
+        for p in paras:
+            for r in p.runs:
+                if r.font.size is not None and r.font.size.pt > 8:
+                    r.font.size = Pt(r.font.size.pt - 0.5)
+        normal = doc.styles["Normal"].font
+        if normal.size is not None:
+            normal.size = Pt(max(8, normal.size.pt - 0.5))
+    if style.get("header"):
+        for p in paras[:first_heading]:  # the name and contact lines
+            if p.text.strip():
+                p.alignment = WD_ALIGN_PARAGRAPH.LEFT if style["header"] == "left" else WD_ALIGN_PARAGRAPH.CENTER
+    if style.get("date_format"):
+        for p in paras:
+            if _is_bullet(p):
+                continue  # a date in a sentence is part of what you wrote
+            for r in p.runs:
+                new = format_dates(r.text, style["date_format"])
+                if new != r.text:
+                    r.text = new
+    if style.get("divider") is False:
+        for p in paras:
+            ppr = p._p.pPr
+            bdr = ppr.find(qn("w:pBdr")) if ppr is not None else None
+            if bdr is not None and _is_heading(p):
+                ppr.remove(bdr)
+    if style.get("skills_columns") == 2:
+        _skills_in_columns(doc)
+    buf = BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def _skills_in_columns(doc) -> None:
+    """Put the Skills lines in two columns: a continuous section break before and after them."""
+    body = doc.element.body
+    final = body.find(qn("w:sectPr"))
+    paras = [Paragraph(p, doc) for p in body.findall(qn("w:p"))]  # top level only: a section can't start in a table
+    start = next((i for i, p in enumerate(paras) if _is_heading(p) and _SKILLS_HEADING.search(p.text)), None)
+    if final is None or start is None:
+        return
+    lines = []
+    for p in paras[start + 1:]:
+        if _is_heading(p):
+            break
+        if p.text.strip():
+            lines.append(p)
+    if len(lines) < 2:
+        return
+
+    def put(sect, el, before: tuple[str, ...]) -> None:  # where the schema wants it in w:sectPr
+        for old in sect.findall(el.tag):
+            sect.remove(old)
+        nxt = next((c for c in sect if c.tag in {qn(f"w:{b}") for b in before}), None)
+        if nxt is None:
+            sect.append(el)
+        else:
+            nxt.addprevious(el)
+
+    def continuous(sect) -> None:
+        put(sect, sect.makeelement(qn("w:type"), {qn("w:val"): "continuous"}), _AFTER_TYPE)
+
+    def section_end(p: Paragraph, cols: int) -> None:
+        sect = copy.deepcopy(final)
+        continuous(sect)
+        put(sect, sect.makeelement(qn("w:cols"), {qn("w:num"): str(cols), qn("w:space"): "360"}), _AFTER_COLS)
+        p._p.get_or_add_pPr().append(sect)
+
+    section_end(paras[start], 1)  # everything up to the Skills heading: one column
+    section_end(lines[-1], 2)  # the Skills lines: two
+    continuous(final)  # the rest goes on below them, not on a new page
+
+
+_AFTER_TYPE = ("pgSz", "pgMar", "paperSrc", "pgBorders", "lnNumType", "pgNumType", "cols", "formProt", "vAlign",
+               "noEndnote", "titlePg", "textDirection", "bidi", "rtlGutter", "docGrid", "printerSettings", "sectPrChange")
+_AFTER_COLS = _AFTER_TYPE[_AFTER_TYPE.index("cols") + 1:]

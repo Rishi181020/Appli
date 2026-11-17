@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import shutil
 import time
 from dataclasses import dataclass, field
 
@@ -58,8 +59,8 @@ def reasoning_for(model: str) -> dict | None:
     off -> no hidden thinking (DeepSeek extraction: ~1s instead of ~7s, and no budget-exhausted empty replies);
     low / medium / high -> thinking effort. Hidden thinking counts against max_tokens, so 'off' also prevents the
     truncated-JSON retries that thinking causes on long postings."""
-    kind = "FAST" if model == os.getenv("LLM_MODEL_FAST") else "WRITE"
-    level = (os.getenv(f"LLM_REASONING_{kind}") or ("off" if kind == "FAST" else "low")).strip().lower()
+    kind = "EXTRACT" if model == os.getenv("LLM_MODEL_EXTRACT") else "FAST" if model == os.getenv("LLM_MODEL_FAST") else "WRITE"
+    level = (os.getenv(f"LLM_REASONING_{kind}") or ("low" if kind == "WRITE" else "off")).strip().lower()
     if level in ("off", "none", "false", "0"):
         return {"enabled": False}
     if level in ("minimal", "low", "medium", "high"):
@@ -155,3 +156,67 @@ def chat_json(system: str, user: str, model: str | None = None, max_tokens: int 
                     {"role": "user", "content": f"That was invalid ({e}). Return corrected JSON only."},
                 ]
     raise ValueError(f"LLM returned invalid JSON 3 times: {last_err}")
+
+
+def claude_available() -> bool:
+    return shutil.which("claude") is not None
+
+
+def claude_json(system: str, user: str, purpose: str = "claude", timeout: int = 600):
+    """One JSON reply from Claude through the local Claude Code CLI (`claude -p`, the person's own Claude login: no API
+    key). No tools, no MCP servers, no user settings or plugins (their hooks would leak into the prompt): just text in,
+    JSON out. Runs in an empty temp folder so it never reads the project."""
+    import subprocess
+    import tempfile
+
+    cmd = [shutil.which("claude") or "claude", "-p", "--output-format", "json", "--tools", "", "--strict-mcp-config",
+           "--no-session-persistence", "--setting-sources", "project", "--model", "claude-opus-5-5", "--effort", "high",
+           "--system-prompt", system + "\nRespond with a single JSON object and nothing else."]
+    t0 = time.time()
+    with tempfile.TemporaryDirectory() as cwd:
+        p = subprocess.run(cmd, input=user, capture_output=True, text=True, encoding="utf-8", timeout=timeout, cwd=cwd,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    took = time.time() - t0
+    usage.calls += 1
+    usage.seconds += took
+    try:
+        out = json.loads(p.stdout)
+    except json.JSONDecodeError:
+        out = {"is_error": True, "result": (p.stderr or p.stdout)[-300:]}
+    if p.returncode or out.get("is_error"):
+        calllog.record("chat", "claude-cli", purpose, took, f"FAILED {str(out.get('result'))[:80]}", ok=False)
+        raise RuntimeError(f"Claude Code failed: {str(out.get('result'))[:200]}")
+    u = out.get("usage") or {}
+    calllog.record("chat", "claude-cli", purpose, took, f"in {u.get('input_tokens', 0) + u.get('cache_read_input_tokens', 0):,}"
+                                                        f" / out {u.get('output_tokens', 0):,} tok")
+    return _extract_json(out.get("result") or "")
+
+
+def chat_stream(system: str, messages: list[dict], model: str | None = None, max_tokens: int = 2500,
+                purpose: str = "chat stream"):
+    """Yield the reply's text as it arrives. Closing the generator (the person pressed Stop, or the browser went away)
+    closes the connection to the model, so nothing more is generated or paid for."""
+    model = model or config.model("write")
+    kwargs = dict(model=model, messages=[{"role": "system", "content": system}, *messages], max_tokens=max_tokens,
+                  temperature=0.4, stream=True)
+    reasoning = reasoning_for(model)
+    if reasoning is not None:
+        kwargs["extra_body"] = {"reasoning": reasoning}
+    t0 = time.time()
+    try:
+        stream = client().chat.completions.create(**kwargs)
+    except openai.BadRequestError:  # the provider rejects the reasoning parameter
+        kwargs.pop("extra_body", None)
+        stream = client().chat.completions.create(**kwargs)
+    n = 0
+    try:
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content if chunk.choices else None
+            if delta:
+                n += len(delta)
+                yield delta
+    finally:
+        stream.close()
+        usage.calls += 1
+        usage.seconds += time.time() - t0
+        calllog.record("chat", model, purpose, time.time() - t0, f"streamed ~{n // 4:,} tok")

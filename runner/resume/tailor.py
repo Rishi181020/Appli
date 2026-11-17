@@ -100,8 +100,11 @@ def propose(job: dict, info: dict, profile_text: str) -> dict:
     ev_norm = match.norm_text(evidence)
     equivalent = set(info.get("equivalent_any", []))
 
+    from .. import bank
+
     missing = set(info["missing"])
-    wanted = [t for t in info["terms"] if t["term"] in missing][:MAX_SKILLS]
+    declined = {match.norm_text(x) for x in bank.load()["declined"]}  # you said you don't have these
+    wanted = [t for t in info["terms"] if t["term"] in missing and match.norm_text(t["term"]) not in declined][:MAX_SKILLS]
     result = {
         "mode": "skills", "base": key, "pct_before": info["pct"], "pct_after": info["pct"],
         "threshold": config.RESUME_MATCH_THRESHOLD, "edits": [], "gaps": [], "problems": [],

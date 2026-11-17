@@ -43,6 +43,10 @@ class UserConfig:
     resumes: list[ResumeCfg]
     cover_letter: Path | None = None
     person: PersonCfg = field(default_factory=PersonCfg)
+    # how tailored resumes look: {template: standard|compact, header: center|left, date_format, skills_columns: 1|2,
+    # divider: bool}; empty = exactly like the person's own resume
+    resume_style: dict = field(default_factory=dict)
+    tailor_prompt: str = ""  # a standing instruction for the Tailor resume chat ("keep bullets under 2 lines")
 
     @property
     def profile_path(self) -> Path:
@@ -96,7 +100,8 @@ def load(owner_id: str) -> UserConfig | None:
     person = PersonCfg(bool(p.get("needs_sponsorship", False)), bool(p.get("us_person", True)),
                        bool(p.get("skip_clearance_jobs", False)))
     return UserConfig(folder, d["owner_id"], d.get("email", ""), d.get("name", folder.name), resumes,
-                      _abs(folder, d.get("cover_letter")), person)
+                      _abs(folder, d.get("cover_letter")), person, dict(d.get("resume_style") or {}),
+                      str(d.get("tailor_prompt") or ""))
 
 
 def save(cfg: UserConfig):
@@ -108,5 +113,7 @@ def save(cfg: UserConfig):
                      "title_keywords": r.title_keywords} for r in cfg.resumes],
         "cover_letter": _rel(cfg.cover_letter, f),
         "person": vars(cfg.person),
+        "resume_style": cfg.resume_style,
+        "tailor_prompt": cfg.tailor_prompt,
     }
     (f / "appli.json").write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")

@@ -13,7 +13,7 @@ const stages: Record<string, string> = {
 };
 
 /** Visible across tabs so background drafts and required actions never disappear with a filter. */
-export default function LiveProgress({ ownerId, onResume, onApplications }: { ownerId: string; onResume: () => void; onApplications: () => void }) {
+export default function LiveProgress({ ownerId, onResume, onApplications, onFind }: { ownerId: string; onResume: () => void; onApplications: () => void; onFind: () => void }) {
   const [status, setStatus] = useState<AgentStatus | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [offline, setOffline] = useState(false);
@@ -26,6 +26,9 @@ export default function LiveProgress({ ownerId, onResume, onApplications }: { ow
       return Array.isArray(saved) ? saved.filter(v => typeof v === "string") : [];
     } catch { return []; }
   });
+  const digestKey = `appli.digest-seen.${ownerId}`;
+  const [digestSeen, setDigestSeen] = useState<string>(() => { try { return localStorage.getItem(digestKey) ?? ""; } catch { return ""; } });
+  const seeDigest = (at: string) => { setDigestSeen(at); try { localStorage.setItem(digestKey, at); } catch { /* this session only */ } };
   const dismiss = (job: Job) => {
     const next = [...dismissed, `${job.id}:${job.updated_at}`].slice(-200);
     setDismissed(next);
@@ -67,7 +70,8 @@ export default function LiveProgress({ ownerId, onResume, onApplications }: { ow
   const current = status?.activity?.current;
   const events = status?.activity?.events ?? [];
   const notices = skipped.filter(j => !dismissed.includes(`${j.id}:${j.updated_at}`));
-  if (!status?.running && !drafts.length && !pending.length && !forms.length && !events.length && !notices.length) return null;
+  const digest = status?.digest && status.digest.count > 0 && status.digest.at !== digestSeen ? status.digest : null;
+  if (!status?.running && !drafts.length && !pending.length && !forms.length && !events.length && !notices.length && !digest) return null;
   const working = status?.running && !offline && !status.stopping && current?.stage !== "review";
   return (
     <section className="live-progress panel" aria-label="Appli progress">
@@ -101,6 +105,7 @@ export default function LiveProgress({ ownerId, onResume, onApplications }: { ow
         </div>}
         {drafts.length > 0 && <div className="progress-action"><span className="spinner" /><span><b>{drafts.length} resume draft{drafts.length === 1 ? "" : "s"} in progress</b><small>{drafts.map(j => j.company).slice(0, 3).join(", ")} · Applications wait for your approval.</small></span></div>}
         {pending.length > 0 && <div className="progress-action"><span><b>{pending.length} resume{pending.length === 1 ? "" : "s"} ready for review</b><small>Approve changes and build the resume, or choose your base resume.</small></span><button className="btn primary small-btn" onClick={onResume}>Review resumes</button></div>}
+        {digest && <div className="progress-action"><span><b>{digest.count} new strong match{digest.count === 1 ? "" : "es"} from your job search</b><small>{digest.jobs.slice(0, 3).map(j => `${j.company} · ${j.title}`).join(", ")}{digest.count > 3 ? "…" : ""}</small></span><button className="btn primary small-btn" onClick={() => { seeDigest(digest.at); onFind(); }}>Open Find jobs</button><button className="btn ghost small-btn" onClick={() => seeDigest(digest.at)}>Dismiss</button></div>}
         {forms.length > 0 && <div className="progress-action"><span><b>{forms.length} application{forms.length === 1 ? "" : "s"} waiting for you</b><small>Answer flagged questions, review the browser tabs and submit each form yourself.</small></span><button className="btn small-btn" onClick={onApplications}>Open applications</button></div>}
       </div>
       {events.length > 0 && <details className="progress-history" open><summary>Recent updates</summary><ol>{[...events].reverse().map((e, i) => <li key={`${e.at}-${i}`}><time>{new Date(e.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time><span>{e.company && <b>{e.company}: </b>}{e.message}</span></li>)}</ol></details>}

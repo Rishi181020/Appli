@@ -39,7 +39,8 @@ def load() -> dict:
         d = json.loads((_dir() / "bank.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         d = {}
-    return {"entries": d.get("entries", []), "files": d.get("files", [])}
+    # declined: posting skills you said you don't have (a tailored resume never adds them, and nobody asks again)
+    return {"entries": d.get("entries", []), "files": d.get("files", []), "declined": d.get("declined", [])}
 
 
 def save(d: dict):
@@ -83,6 +84,49 @@ def upsert_entry(e: dict) -> dict:
         d["entries"].append(e)
     save(d)
     return e
+
+
+CONFIRMED = "Skills you confirmed"  # the skills entry your "yes, I used it" answers go in
+
+
+def answer_skill(term: str, have: bool) -> None:
+    """Your answer to "Did you use X?" on a tailored resume: yes adds it to your confirmed skills (so it's backed next
+    time), no adds it to the declined list. Either way it isn't asked again."""
+    from .resume.match import norm_text
+
+    term = str(term).strip()[:80]
+    if not term:
+        raise BankError("Which skill?")
+    d = load()
+    key = norm_text(term)
+    d["declined"] = [x for x in d["declined"] if norm_text(x) != key] + ([] if have else [term])
+    if have:
+        e = next((x for x in d["entries"] if x["kind"] == "skills" and x["title"] == CONFIRMED), None)
+        if e is None:
+            e = _clean_entry({"kind": "skills", "title": CONFIRMED, "text": ""}, "typed")
+            d["entries"].append(e)
+        items = [i.strip() for i in e["text"].split(",") if i.strip()]
+        if key not in {norm_text(i) for i in items}:
+            e["text"] = ", ".join(items + [term])
+            e["updated"] = time.strftime("%Y-%m-%d %H:%M")
+    save(d)
+
+
+def add_facts(entry_id: str | None, facts: str) -> str:
+    """What you told the tailor you actually did, in your words: appended to that bank entry (or a new note), so a
+    rewritten bullet can quote it. Returns the entry id."""
+    facts = re.sub(r"\s+", " ", str(facts)).strip()[:2000]
+    if len(facts) < 10:
+        raise BankError("Say a little more about what you did")
+    d = load()
+    e = next((x for x in d["entries"] if x["id"] == entry_id), None)
+    if e is None:
+        e = _clean_entry({"kind": "narrative", "title": "Notes for tailoring", "text": ""}, "typed")
+        d["entries"].append(e)
+    e["text"] = (e["text"].rstrip() + "\n" + facts).strip()[:12000]
+    e["updated"] = time.strftime("%Y-%m-%d %H:%M")
+    save(d)
+    return e["id"]
 
 
 def delete_entry(entry_id: str):
@@ -140,6 +184,8 @@ experience entries for their personal experience bank. Copy, never write:
   motivation become kind "narrative" entries (skip greetings, sign-offs and the company-specific opening).
 - A research paper is one "publication" entry: title as `title`, venue/journal/conference as `org`, year as `end`,
   authors and the abstract plus the paper's own statements of its contributions and results in `text` (copied).
+- A project that won a prize or placed at a hackathon: the project's name alone as `title`, the prize as written as
+  `org` (e.g. "2nd Place, Apify x Scalekit Hackathon"). It's printed next to the project's name on a resume.
 - Dates as written ("Jan 2026", "2023"); "Present" for ongoing. Leave fields empty when the document doesn't say.
 - `tags`: technologies, methods and domains named in that entry's own text (a few words each).
 - Skip the candidate's name and contact details.
