@@ -903,6 +903,22 @@ def search(log=print) -> dict:
     return out
 
 
+SIMPLIFY_CATEGORIES = ("software", "ai/ml")  # Simplify's "Software" and "AI/ML/Data" sections
+
+
+def simplify_picks(found: list[Found], have: set[str], days: int = 7) -> list[dict]:
+    """The startup pull: new-grad list postings from the last `days` days in the software / AI sections, not yet in
+    your jobs. No title / location screening: the list is already curated, and a missed opening costs more."""
+    out, seen = [], set(have)
+    for f in found:
+        age = _age_days(f.posted)
+        if f.key in seen or age is None or age > days or not f.category.lower().startswith(SIMPLIFY_CATEGORIES):
+            continue
+        seen.add(f.key)
+        out.append(asdict(f))
+    return out
+
+
 def to_rows(results: list[dict]) -> list[JobRow]:
     """Picked results -> job rows. Better matches get a better tier, so the queue fills them first."""
     rows = []

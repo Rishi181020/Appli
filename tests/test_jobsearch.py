@@ -114,5 +114,13 @@ class JobSearchTests(unittest.TestCase):
         self.assertEqual(json.loads((config.HOME / "h1b.json").read_text())["source"], str(csv))
 
 
+class SimplifyPicksTests(unittest.TestCase):
+    def test_new_recent_software_or_ai_only_once(self):
+        items = [found("new", category="Software"), found("new", category="Software"),  # listed twice
+                 found("ai", category="AI/ML/Data", age=6), found("old", category="Software", age=8),
+                 found("hw", category="Hardware"), found("have", category="Software")]
+        self.assertEqual([p["key"] for p in jobsearch.simplify_picks(items, {"have"})], ["new", "ai"])
+
+
 if __name__ == "__main__":
     unittest.main()

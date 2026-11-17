@@ -75,6 +75,24 @@ assert [x["id"] for x in plan_c["reserve"]] == ["proj"], "an invented id is drop
 assert draft_c["entries"]["now"]["bullets"][0]["text"] == "Did it"
 print("claude single pass checks passed")
 
+# ---- Claude names entries by title, not id: mapped back; an answer naming no entry is asked again, then an error ----
+named = [{**e, "id": "a1b2c3d4e5", "title": "Software Engineer Intern"} if e["id"] == "now" else e for e in bank_entries]
+by_title = {"pages": 1, "sections": [{"type": "experience", "entries": [{"id": "Software Engineer Intern", "bullets": 2}]}],
+            "entries": [{"id": "software engineer intern", "bullets": [{"text": "Did it", "evidence": "now text"}]}]}
+with patch.object(bankbuild.llm, "claude_json", return_value=by_title):
+    plan_t, draft_t = bankbuild.claude_build({"id": 1}, {"terms": []}, named, SimpleNamespace(education=[]), {}, [], "")
+assert draft_t["entries"]["a1b2c3d4e5"]["bullets"], draft_t
+with patch.object(bankbuild.llm, "claude_json", return_value={"pages": 1, "sections": [], "entries": {}}) as empty, \
+        patch.object(bankbuild.config, "ROOT", __import__("pathlib").Path(__import__("tempfile").mkdtemp())):
+    (bankbuild.config.ROOT / "out").mkdir()
+    try:
+        bankbuild.claude_build({"id": 1}, {"terms": []}, named, SimpleNamespace(education=[]), {}, [], "")
+        raise AssertionError("an empty draft must not build")
+    except RuntimeError:
+        pass
+assert empty.call_count == 2
+print("claude entry-id recovery checks passed")
+
 # ---- a project's prize is printed on its heading; the person's own instructions reach Claude ------------------------
 src = r"\documentclass{article}\begin{document}\section{Education}\resumeSubheading{U}{}{MS}{2027}\end{document}"
 won = {"id": "r", "kind": "project", "title": "Riff", "org": "1st Place, X Hackathon", "link": "", "start": "", "end": ""}

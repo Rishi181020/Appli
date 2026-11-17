@@ -250,6 +250,30 @@ def cmd_find(_args):
     jobsearch.search(lambda s: print(s, flush=True))
 
 
+def cmd_simplify(args):
+    """Add the newest SimplifyJobs new-grad postings (software / AI, last --days days) to your jobs, scored."""
+    from . import jobsearch
+    from .db import all_jobs, dedupe_jobs, import_jobs, park_unsupported
+
+    _activate()
+    have = set()
+    for j in all_jobs("url,dedupe_key"):
+        if j.get("url"):
+            have.add(jobsearch._key(j["url"]))
+        have.add((j.get("dedupe_key") or "").lower().rstrip("/"))
+    picks = jobsearch.simplify_picks(jobsearch.from_lists(["new_grad"], print), have, args.days)
+    if not picks:
+        print("Simplify: nothing new")
+        return
+    result = import_jobs(jobsearch.to_rows(picks))
+    dedupe_jobs()
+    park_unsupported()
+    print(f"Simplify: added {result['inserted']} new posting(s)", flush=True)
+    if result["ids"]:
+        cmd_rescore(argparse.Namespace(ids=",".join(map(str, result["ids"])), ids_file=None, status="", unscored=True,
+                                       limit=len(result["ids"]), dry_run=False))
+
+
 DIGEST_TASK = "Appli daily job search"
 
 
@@ -451,6 +475,9 @@ def main():
     p_dg.add_argument("--install", metavar="HH:MM", help="Run every day at this time (Windows Task Scheduler)")
     p_dg.add_argument("--uninstall", action="store_true", help="Remove the daily task")
     p_dg.set_defaults(fn=cmd_digest)
+    p_sj = sub.add_parser("simplify", help="Add the newest SimplifyJobs new-grad postings to your jobs (runs at startup)")
+    p_sj.add_argument("--days", type=int, default=7)
+    p_sj.set_defaults(fn=cmd_simplify)
     p_h1 = sub.add_parser("h1b", help="Load a DOL H-1B disclosure file (.xlsx/.csv path or link) for past-sponsorship counts")
     p_h1.add_argument("source", help="File or link from https://www.dol.gov/agencies/eta/foreign-labor/performance")
     p_h1.set_defaults(fn=cmd_h1b)

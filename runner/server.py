@@ -324,7 +324,7 @@ class Handler(BaseHTTPRequestHandler):
                                   "wordprocessingml.document", download=files[-1].name)
             return self._send(200, files[-1].read_bytes(), "application/pdf")
         if path == "/api/status":
-            return self._json(200, {**status(uid), "digest": _digest(uid)})
+            return self._json(200, {**status(uid), "digest": _digest(uid), "pulling": task_status("simplify", uid)["running"]})
         if path == "/api/me":
             with db.as_user(user["token"], uid):
                 try:
@@ -829,6 +829,13 @@ def serve(open_browser: bool = True):
     print(f"Appli is running at {url}  (Ctrl+C to quit)")
     if open_browser:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
+    try:  # every start: pull the newest Simplify new-grad postings in, so a fresh opening isn't missed
+        owner = db.user_id()
+        code, res = start_task("simplify", owner, ["simplify"], "Pulling new Simplify jobs")
+        if code != 200:
+            print(f"Simplify pull skipped: {res.get('error')}")
+    except Exception as e:  # nobody signed in yet: the first sign-in's next start pulls them
+        print(f"Simplify pull skipped ({type(e).__name__})")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

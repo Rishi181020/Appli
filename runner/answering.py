@@ -46,7 +46,7 @@ _IDENTITY = [
     (r"^(legal )?last name|surname|family name", lambda p: p.last_name),
     (r"^(full |legal )?name$", lambda p: p.full_name),
     (r"e-?mail", lambda p: p.email),
-    (r"phone|mobile|telephone", lambda p: p.phone),
+    (r"^(?!.*\bext(ension)?\b).*(phone|mobile|telephone)", lambda p: p.phone),  # never the extension box
     (r"linkedin", lambda p: p.linkedin),
     (r"github", lambda p: p.github),
     (r"^(current )?(city|location)|where are you (located|based)", lambda p: p.city),
@@ -54,8 +54,11 @@ _IDENTITY = [
     (r"website|portfolio|personal (site|page)|^url$", lambda p: p.github),
 ]
 _STANDARD = [  # label regex -> key in profile.standard_answers
-    (r"authori[sz]ed to work|legally (authori[sz]ed|eligible)|eligible to work", "Authorized to work in the US?"),
-    (r"sponsorship|visa status", "Will you now or in the future require sponsorship for employment visa status?"),
+    (r"authori[sz]ed to work|legally (authori[sz]ed|eligible)|eligible to work|"
+     r"proof of (your )?(work |employment )?(authori[sz]ation|eligibility)", "Authorized to work in the US?"),
+    # "...requiring sponsorship, please select your current visa type" asks WHICH visa: not this Yes / No
+    (r"^(?!.*(visa type|type of visa|which visa)).*(sponsorship|visa status)",
+     "Will you now or in the future require sponsorship for employment visa status?"),
     (r"disabilit", "Disability?"),
     (r"\bgender\b", "Gender"),
     (r"pronoun", "Pronouns"),
@@ -116,11 +119,56 @@ def fuzzy_option(value: str, options: list[str]) -> str | None:
     if strict:
         return strict
     v = norm(value)
-    for o in options:
-        if v and (v in norm(o) or (norm(o) and norm(o) in v)):
+    for o in options:  # an option inside the value only when it's a real word or more: "MA" is not in "Master's"
+        if v and (v in norm(o) or (len(norm(o)) >= 4 and norm(o) in v)):
             return o
     close = difflib.get_close_matches(v, [norm(o) for o in options], n=1, cutoff=0.6)
     return next((o for o in options if norm(o) == close[0]), None) if close else None
+
+
+_GENERIC = {"engineering", "science", "sciences", "studies", "and", "of", "in", "the", "technology", "general", "other",
+            "arts", "applied"}
+
+
+def study_option(value: str, options: list[str]) -> str | None:
+    """A field of study among options: it must share a telling word ("Computer"), never only "Engineering"
+    (spelling-close "Aerospace Engineering" is not "Computer Science and Engineering")."""
+    strict = match_option(value, options)
+    if strict:
+        return strict
+    want = set(norm(value).split())
+    best, score = None, 0
+    for o in options:
+        got = set(norm(o).split())
+        key = len((want & got) - _GENERIC)
+        if key and key * 2 + len(want & got) > score:
+            best, score = o, key * 2 + len(want & got)
+    return best
+
+
+# a degree's usual spellings, most specific first; a Bachelor of Engineering is a BS where a form has no BE
+_DEGREES = [
+    (r"master of science|\bm\.?s\.?$|\bmsc\b", ["Master of Science", "MS", "M.S.", "MSc", "M.Sc.", "Master of Science (MS)"]),
+    (r"master of engineering", ["Master of Engineering", "MEng", "M.Eng.", "ME", "M.E."]),
+    (r"master of business", ["Master of Business Administration", "MBA"]),
+    (r"bachelor of engineering", ["Bachelor of Engineering", "BE", "B.E.", "BEng", "B.Eng.", "Bachelor of Technology", "BTech",
+                                  "B.Tech", "Bachelor of Science", "BS", "B.S.", "BSc"]),
+    (r"bachelor of technology", ["Bachelor of Technology", "BTech", "B.Tech", "Bachelor of Engineering", "BE", "Bachelor of Science", "BS"]),
+    (r"bachelor of science", ["Bachelor of Science", "BS", "B.S.", "BSc", "B.Sc."]),
+    (r"doctor|ph\.?d", ["Doctor of Philosophy", "PhD", "Ph.D.", "Doctorate"]),
+]
+
+
+def degree_option(e, options: list[str]) -> str | None:
+    """Your degree among a form's options, by exact name or its usual abbreviation; then the level ("Master's Degree").
+    Never by letters inside a word ("MA" in "Master's" is a Master of Arts)."""
+    for pattern, names in _DEGREES:
+        if re.search(pattern, e.degree.lower()):
+            for name in names:
+                hit = next((o for o in options if norm(o) == norm(name)), None)
+                if hit:
+                    return hit
+    return match_option(e.degree, options) or match_option(e.level, options)
 
 
 # Education blocks repeat on a form: the n-th "School" field gets the n-th education entry from the profile.
@@ -154,6 +202,10 @@ def _education_answer(f: Field, label: str, profile: Profile) -> str | None:
     }[what]
     if not value:
         return None
+    if f.options and what == "degree":
+        return degree_option(e, f.options)
+    if f.options and what == "field":
+        return study_option(value, f.options)
     if f.options:
         for candidate in (value, str(int(value)) if value.isdigit() else "", f"{MONTHS.index(value) + 1:02d}" if value in MONTHS else ""):
             hit = fuzzy_option(candidate, f.options) if candidate else None
@@ -248,7 +300,8 @@ _SENSITIVE = re.compile(
     r"non-?compete|restrictive covenant|non-?solicit|background (check|screen)|drug (test|screen)|"
     r"\bconsent\b|acknowledg|\bcertify\b|\battest\b|i understand|i agree|terms and conditions|"
     r"privacy (policy|notice)|data protection|gdpr|information notice|under (penalty|oath)|"
-    r"currently employed by|previously (employed|worked)|(worked|employed) (for|at|by) .{0,40}before",
+    r"currently employed by|previously (employed|worked)|(worked|employed) (for|at|by) .{0,40}before|"
+    r"\bcitizen(ship)?\b|export control",
     re.I,
 )
 
@@ -277,6 +330,27 @@ def ashby_declaration(f: Field, job: dict) -> bool:
 def _not_logistics(label: str) -> bool:
     """False for "I understand this is an in-person role": logistics are answered from the profile, not with a Yes."""
     return not (_LOGISTICS.search(label) and not _TRUE_CONSENT.search(label))
+
+
+_PAST_EMPLOYER = re.compile(r"(previously|ever|currently) (been )?(employed|worked)|(worked|employed) (for|at|by|with) .{0,40}before|"
+                            r"current(ly)? .{0,20}(employee|contractor) (of|at|for)", re.I)
+_RELATIVES = re.compile(r"family|relative|related to|relationship|spouse|referr", re.I)
+
+
+def past_employer_no(f: Field, profile: Profile, job: dict) -> str | None:
+    """"Have you previously worked for <company>?" -> No, read from your work history: only when the company is none of
+    your past employers or schools (Santa Clara University may well be). Questions about relatives still come to you."""
+    company = norm(job.get("company") or "")
+    if not company or not _PAST_EMPLOYER.search(f.label) or _RELATIVES.search(f.label):
+        return None
+    from . import profile_md
+
+    orgs = [x.get("company") or "" for x in profile_md.parse(profile.text).get("experience") or []]
+    orgs += [e.school for e in profile.education]
+    words = {w for w in company.split() if len(w) > 3}
+    if any(company in norm(o) or norm(o) in company or words & set(norm(o).split()) for o in orgs if o):
+        return None  # it may be a yes: yours to answer
+    return match_option("No", f.options) if f.options else "No"
 
 
 def sensitive(label: str) -> bool:
@@ -482,6 +556,8 @@ def answer_fields(
             )
         elif ashby_declaration(f, job):
             res.values[f.id], res.tiers[f.id] = "Yes", "direct"
+        elif (no := past_employer_no(f, profile, job)) is not None:
+            res.values[f.id], res.tiers[f.id] = no, "direct"
         elif sensitive(f.label):
             res.unanswered.append(
                 {"id": f.id, "label": f.label, "required": f.required, "options": f.options,

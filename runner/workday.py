@@ -22,7 +22,7 @@ from urllib.parse import urlparse
 from playwright.sync_api import Page
 
 from . import config
-from .answering import Field, answer_fields, direct_answer, fuzzy_option, norm
+from .answering import Field, answer_fields, degree_option, direct_answer, fuzzy_option, match_option, norm, study_option
 
 # ---- the person's Workday login (one email + password for every company's Workday site) ------------------
 def _creds_file() -> Path | None:
@@ -210,7 +210,7 @@ def _loc(page: Page, f: WField, inner: str = ""):
 def _list_options(page: Page, f: WField) -> list[str]:
     btn = _loc(page, f, 'button[aria-haspopup="listbox"]')
     try:
-        btn.click(timeout=3000)
+        _open(page, btn)
         page.wait_for_timeout(350)
         opts = [o.strip() for o in page.locator(_OPEN_OPTIONS).all_inner_texts()]
         page.keyboard.press("Escape")
@@ -220,16 +220,45 @@ def _list_options(page: Page, f: WField) -> list[str]:
         return []
 
 
+def _open(page: Page, btn) -> None:
+    """Open a dropdown. A field that appears after an earlier answer can sit under an overlay: plain click, then forced,
+    then a script click, until its options show."""
+    for how in ("click", "force", "script"):
+        try:
+            if how == "click":
+                btn.click(timeout=3000)
+            elif how == "force":
+                btn.click(timeout=2000, force=True)
+            else:
+                btn.evaluate("b => { b.scrollIntoView({block: 'center'}); b.click(); }")
+            page.locator(_OPEN_OPTIONS).first.wait_for(state="visible", timeout=1500)
+            return
+        except Exception:
+            continue
+
+
 def _pick_list(page: Page, f: WField, value: str) -> bool:
     btn = _loc(page, f, 'button[aria-haspopup="listbox"]')
     try:
-        btn.click(timeout=3000)
+        _open(page, btn)
         page.wait_for_timeout(350)
         opts = page.locator(_OPEN_OPTIONS)
-        texts = [o.strip() for o in opts.all_inner_texts()]
-        target = fuzzy_option(value, texts)
+        target, texts = None, []
+        for _ in range(10):  # the options load a moment after the popup opens (State waits on Country)
+            texts = [o.strip() for o in opts.all_inner_texts()]
+            target = fuzzy_option(value, texts)
+            if target is not None:
+                break
+            page.wait_for_timeout(300)
         if target is None:
+            # a long list renders only the options in view: type-ahead jumps to the wanted one
+            page.keyboard.type(value[:30], delay=40)
+            page.keyboard.press("Enter")
+            page.wait_for_timeout(400)
+            if value.lower() in (btn.inner_text(timeout=2000) or "").lower():
+                return True
             page.keyboard.press("Escape")
+            print(f"    workday {f.label}: {value!r} isn't among the options ({', '.join(texts[:6]) or 'none loaded'})")
             return False
         o = opts.nth(texts.index(target))
         try:
@@ -261,16 +290,35 @@ def _pick_prompt(page: Page, f: WField, value: str, matcher=None) -> bool:
         for q in dict.fromkeys([value[:60], " ".join(value.split()[:2])]):
             inp.fill(q)
             inp.press("Enter")
-            page.wait_for_timeout(900)
-            opts = page.locator('[data-automation-id="promptOption"]:visible')
-            if not opts.count():
-                # the last listbox, not [role=option] page-wide: that includes other fields' picks
-                opts = page.locator('[role="listbox"]:visible >> nth=-1 >> [role="option"]')
-            texts = [o.strip() for o in opts.all_inner_texts()]
+            for _ in range(5):  # results arrive from the server: up to ~3s
+                page.wait_for_timeout(600)
+                opts = page.locator('[data-automation-id="promptOption"]:visible')
+                if not opts.count():
+                    # the last listbox, not [role=option] page-wide: that includes other fields' picks
+                    opts = page.locator('[role="listbox"]:visible >> nth=-1 >> [role="option"]')
+                texts = [o.strip() for o in opts.all_inner_texts()]
+                if texts:
+                    break
             target = matcher(value, texts)
             if target is not None:
                 break
+        if target is None and texts:
+            # nested sources ("Job Board" > "LinkedIn"): open the likeliest category and look inside it
+            cat = next((x for p in ("job board", "social", "career web", "online", "website") for x in texts
+                        if re.search(p, x, re.I)), None)
+            if cat is not None:
+                opts.nth(texts.index(cat)).click(timeout=3000)
+                page.wait_for_timeout(900)
+                opts = page.locator('[data-automation-id="promptOption"]:visible')
+                if not opts.count():
+                    opts = page.locator('[role="listbox"]:visible >> nth=-1 >> [role="option"]')
+                texts = [o.strip() for o in opts.all_inner_texts()]
+                if not texts:  # the category had nothing under it: it was picked as the answer itself
+                    print(f"    workday {f.label[:50]}: picked {cat!r} for {value!r}")
+                    return True
+                target = matcher(value, texts)
         if target is None:
+            print(f"    workday {f.label[:50]}: {value!r} not among the search results ({', '.join(texts[:6]) or 'none'})")
             inp.fill("")
             page.keyboard.press("Escape")
             return False
@@ -282,6 +330,20 @@ def _pick_prompt(page: Page, f: WField, value: str, matcher=None) -> bool:
         return False
 
 
+def _clear_prompt(page: Page, f: WField) -> None:
+    """Remove a search box's selected pill(s) (the x on each)."""
+    box = _loc(page, f)
+    for _ in range(3):
+        x = box.locator('[data-automation-id="DELETE_charm"], [aria-label^="Delete"], [aria-label^="Remove"]')
+        if not x.count():
+            return
+        try:
+            x.first.click(timeout=2000)
+            page.wait_for_timeout(300)
+        except Exception:
+            return
+
+
 def fill(page: Page, f: WField, value: str) -> bool:
     from . import forms
 
@@ -289,8 +351,41 @@ def fill(page: Page, f: WField, value: str) -> bool:
         return _pick_list(page, f, value)
     if f.kind == "prompt":
         return _pick_prompt(page, f, value)
-    if f.kind in ("text", "textarea", "radio", "checkbox"):
+    if f.kind == "radio":
+        return _pick_radio(page, f, value)
+    m = re.fullmatch(r"\$?\s*(\d+(?:\.\d+)?)\s*[kK]", value.strip())
+    if f.kind == "text" and m:  # "140K" in Workday's number box would keep only "140"
+        value = str(round(float(m.group(1)) * 1000))
+    if f.kind in ("text", "textarea", "checkbox"):
         return forms.fill_field(page, f.as_field(), value)
+    return False
+
+
+def _pick_radio(page: Page, f: WField, value: str) -> bool:
+    """Workday hides the radio input behind its label, so a forced check often doesn't take: try the label, then a script
+    click, and believe only the input's own checked state."""
+    from .answering import match_option
+
+    opt = match_option(value, f.options) or fuzzy_option(value, f.options)
+    if opt is None:
+        print(f"    workday {f.label[:60]}: {value!r} isn't among {f.options}")
+        return False
+    el = page.locator(f'[data-appli-opt="{f.id}o{f.options.index(opt)}"]')
+    for how in ("check", "label", "script"):
+        try:
+            if how == "check":
+                el.check(timeout=2000, force=True)
+            elif how == "label":
+                rid = el.get_attribute("id")
+                (page.locator(f'label[for="{rid}"]') if rid else el.locator("xpath=ancestor::label[1]")).first.click(timeout=2000)
+            else:
+                el.evaluate("e => e.click()")
+            page.wait_for_timeout(200)
+            if el.is_checked():
+                return True
+        except Exception:
+            continue
+    print(f"    workday {f.label[:60]}: couldn't select {opt!r}")
     return False
 
 
@@ -303,6 +398,8 @@ def _workday_direct(f: WField, profile) -> str | None:
         from .places import country_option
 
         return country_option(profile.country, f.options) if f.options else None
+    if re.search(r"^city$", l) and profile.city:  # Workday has its own State box: "Santa Clara", not "Santa Clara, CA"
+        return profile.city.split(",")[0].strip()
     if re.search(r"^phone number$", l) and profile.phone:
         return re.sub(r"^\+?1[\s-]*", "", profile.phone).strip()  # the country code has its own box
     return None
@@ -335,6 +432,7 @@ class Tracked:
     blank_polls: int = 0
     failed_fp: str = ""  # the page's answers when Workday last refused to continue
     pending_fp: str = ""
+    page_labels: set = field(default_factory=set)  # the questions the last fill pass saw
 
 
 def begin(page: Page, job: dict) -> str | None:
@@ -346,8 +444,9 @@ def begin(page: Page, job: dict) -> str | None:
     try:
         if apply_btn.count():
             apply_btn.click(timeout=8000)
-        else:
-            page.get_by_role("button", name=re.compile(r"^\s*apply\s*$", re.I)).first.click(timeout=8000)
+        else:  # an application already started shows "Continue Application"; some tenants make Apply a link
+            name = re.compile(r"^\s*(apply( now)?|continue( application)?)\s*$", re.I)
+            page.get_by_role("button", name=name).or_(page.get_by_role("link", name=name)).first.click(timeout=8000)
     except Exception:
         return "Couldn't find Workday's Apply button"
     page.wait_for_timeout(1500)
@@ -430,12 +529,16 @@ def _upload_resume(t: Tracked) -> bool:
 _BLOCKS_JS = r"""
 (title) => {
   // the blocks of one section, headed 'Work Experience 1', 'Work Experience 2'...; each gets data-appli-block
-  const t = el => ((el && (el.innerText || el.textContent)) || '').replace(/\s+/g, ' ').trim();
+  // "Education (Required) 1" is "Education 1": notes in brackets are dropped before matching
+  const t = el => ((el && (el.innerText || el.textContent)) || '').replace(/\s*\([^)]*\)/g, '').replace(/\s+/g, ' ').trim();
   const base = title.replace(/s$/i, '');  // "Websites" section, "Website 1" blocks
   const re = new RegExp('^' + base + 's?\\s+(\\d+)$', 'i');
   const slug = title.toLowerCase().replace(/[^a-z]+/g, '-');
   let n = 0;
-  [...document.querySelectorAll('h3, h4, h5, [role="heading"]')].filter(h => re.test(t(h))).forEach(h => {
+  // the block titles: headings on most tenants, a plain div / span on others (the innermost element with the text)
+  const titles = [...document.querySelectorAll('h2, h3, h4, h5, h6, [role="heading"], legend, div, span, p, label')]
+    .filter(h => re.test(t(h)) && ![...h.children].some(c => re.test(t(c))));
+  titles.forEach(h => {
     let box = h.parentElement;
     while (box && !box.querySelector('[data-automation-id^="formField-"]')) box = box.parentElement;
     if (box) box.setAttribute('data-appli-block', slug + '-' + (++n));
@@ -446,7 +549,8 @@ _BLOCKS_JS = r"""
 _ADD_JS = r"""
 (title) => {
   // the section's own "Add" / "Add Another" button (never Next / Submit)
-  const t = el => ((el && (el.innerText || el.textContent)) || '').replace(/\s+/g, ' ').trim();
+  // "Education (Required) 1" is "Education 1": notes in brackets are dropped before matching
+  const t = el => ((el && (el.innerText || el.textContent)) || '').replace(/\s*\([^)]*\)/g, '').replace(/\s+/g, ' ').trim();
   document.querySelectorAll('[data-appli-add]').forEach(b => b.removeAttribute('data-appli-add'));
   const base = title.toLowerCase().replace(/s$/, '');
   const byLabel = [...document.querySelectorAll('button')].find(b => {
@@ -469,7 +573,7 @@ _ADD_JS = r"""
 
 def _fill_date(page: Page, f: WField, ym: str) -> bool:
     """Workday date boxes: separate month / year inputs (year only on some)."""
-    m = re.match(r"(\d{4})(?:-(\d{1,2}))?", ym or "")
+    m = re.match(r"(\d{4})(?:-(\d{1,2}))?(?:-(\d{1,2}))?", ym or "")
     if not m:
         return False
     box = page.locator(f'[data-appli="{f.id}"]')
@@ -485,12 +589,16 @@ def _fill_date(page: Page, f: WField, ym: str) -> bool:
         month, year = box.locator(A("dateSectionMonth-input")), box.locator(A("dateSectionYear-input"))
         if month.count() and m.group(2):
             type_into(month.first, f"{int(m.group(2)):02d}")
+        day = box.locator(A("dateSectionDay-input"))
+        if day.count():  # MM/DD/YYYY boxes
+            type_into(day.first, f"{int(m.group(3) or 1):02d}")
         if year.count():
             type_into(year.first, m.group(1))
         else:
             inp = box.locator("input").first
             inp.fill(f"{int(m.group(2)):02d}/{m.group(1)}" if m.group(2) else m.group(1), timeout=3000)
-        page.wait_for_timeout(200)
+        page.keyboard.press("Tab")  # commit it: Workday shows the questions that depend on it only then
+        page.wait_for_timeout(300)
         return True
     except Exception as e:
         print(f"    workday {f.label}: couldn't type {ym!r}: {type(e).__name__}: {str(e)[:100]}")
@@ -520,6 +628,8 @@ def _exp_value(x: dict, f: WField) -> str | None:
         return x.get("title")
     if re.search(r"company|employer|organi[sz]ation", l):
         return x.get("company")
+    if re.search(r"^location|city", l):
+        return x.get("location")
     if re.search(r"description|responsibilit|summary", l):
         bullets = [b for b in x.get("bullets") or [] if b.strip()]
         return "\n".join(f"- {b.strip()}" for b in bullets)[:2000] or None
@@ -545,6 +655,14 @@ def _edu_value(e, f: WField) -> str | None:
     return None
 
 
+_study_match = study_option  # a field of study among Workday's search results
+
+
+def _differs(have: str, want: str) -> bool:
+    """A value Workday read from the resume that isn't yours (its parse garbles fields)."""
+    return bool(have) and norm(have) != norm(want) and _study_match(want, [have]) is None
+
+
 def _school_match(value: str, texts: list[str]) -> str | None:
     from .forms import _school_target
 
@@ -556,19 +674,26 @@ def _fill_block(t: Tracked, root: str, prefix: str, item, value_of, where: str) 
     n, left = 0, []
     for f in extract(page, [], root, prefix):
         v = value_of(item, f)
-        if not v or (f.value and f.kind != "date"):
+        if not v or (f.value and f.kind != "date" and not (f.kind == "prompt" and _differs(f.value, v))):
             continue  # nothing to say, or already filled (Workday or an earlier pass)
+        if f.value and f.kind == "prompt":  # Workday's resume reading picked the wrong one: remove it first
+            _clear_prompt(page, f)
         if f.kind == "date":
             ok = bool(f.value) or _fill_date(page, f, v)
         elif f.kind in ("consent", "checkbox"):
             ok = _check(page, f)
         elif f.kind == "list":
             f.options = _list_options(page, f)
-            pick = fuzzy_option(v, f.options) or (fuzzy_option(getattr(item, "degree", ""), f.options) if "degree" in f.label.lower() else None)
+            if "degree" in f.label.lower() and hasattr(item, "degree"):  # "MS", never "MA" because "Ma" starts "Master's"
+                pick = degree_option(item, f.options)
+            else:
+                pick = fuzzy_option(v, f.options)
             ok = bool(pick) and _pick_list(page, f, pick)
         elif f.kind == "prompt":
             school = bool(re.search(r"school|university|institution|college", f.label, re.I))
-            ok = _pick_prompt(page, f, v, _school_match if school else None) or (school and _pick_prompt(page, f, "Other"))
+            study = bool(re.search(r"field of study|major|discipline|area of study", f.label, re.I))
+            ok = (_pick_prompt(page, f, v, _school_match if school else _study_match if study else None)
+                  or (school and _pick_prompt(page, f, "Other")))
         else:
             ok = fill(page, f, v)
         if ok:
@@ -580,7 +705,7 @@ def _fill_block(t: Tracked, root: str, prefix: str, item, value_of, where: str) 
     return n, left
 
 
-def _fill_section(t: Tracked, title: str, items: list, value_of) -> tuple[int, list[dict]]:
+def _fill_section(t: Tracked, title: str, items: list, value_of, add: bool = True) -> tuple[int, list[dict]]:
     """One block per profile entry: press the section's Add button as needed, then fill each block."""
     page = t.page
     n, left = 0, []
@@ -588,6 +713,8 @@ def _fill_section(t: Tracked, title: str, items: list, value_of) -> tuple[int, l
     have = page.evaluate(_BLOCKS_JS, title)
     for i, item in enumerate(items[:6], start=1):
         if i > have:
+            if not add:  # the second look only fills blocks already there
+                break
             if not page.evaluate(_ADD_JS, title):
                 if i == 1:
                     return 0, []  # this page has no such section
@@ -599,9 +726,15 @@ def _fill_section(t: Tracked, title: str, items: list, value_of) -> tuple[int, l
             except Exception:  # re-rendered (the tag is gone) or covered: find it again and click it from the page
                 page.evaluate(_ADD_JS, title)
                 page.locator("[data-appli-add]").first.evaluate("b => b.click()")
-            page.wait_for_timeout(1000)
-            have = page.evaluate(_BLOCKS_JS, title)
+            for _ in range(8):  # the new block renders a moment after the click
+                page.wait_for_timeout(500)
+                have = page.evaluate(_BLOCKS_JS, title)
+                if have >= i:
+                    break
             if have < i:
+                print(f"    workday {title}: added entry {i} but couldn't find it on the page")
+                left.append({"id": f"{slug}-{i}", "label": f"{title} {i}", "required": True,
+                             "reason": "added the entry but couldn't fill it: fill it in the browser"})
                 break
         a, b = _fill_block(t, f'[data-appli-block="{slug}-{i}"]', f"{slug[:3]}{i}-", item, value_of, f"{title} {i}")
         n, left = n + a, left + b
@@ -638,18 +771,33 @@ def _fill_skills(t: Tracked, skills: list[str]) -> int:
     return n
 
 
-def _fill_my_experience(t: Tracked) -> tuple[int, list[dict]]:
+def _add_locations(jobs: list[dict]) -> None:
+    """The profile has no job locations; the experience bank does ("Pune, India"): matched by company."""
+    from . import bank
+
+    try:
+        where = {norm(e["org"]): e.get("location") for e in bank.load()["entries"] if e["kind"] == "experience" and e.get("location")}
+    except Exception:
+        return
+    for x in jobs:
+        x.setdefault("location", where.get(norm(x.get("company") or "")))
+
+
+def _fill_my_experience(t: Tracked, add: bool = True) -> tuple[int, list[dict]]:
     """Apply Manually leaves My Experience empty: work history, education, skills and websites come from the profile."""
     from . import profile_md
 
     data = profile_md.parse(t.profile.text)
+    _add_locations(data.get("experience") or [])
     n, left = 0, []
-    for title, items, value_of in (("Work Experience", data.get("experience") or [], _exp_value),
-                                   ("Education", t.profile.education, _edu_value)):
-        if items:
+    for titles, items, value_of in ((("Work Experience", "Work History"), data.get("experience") or [], _exp_value),
+                                    (("Education",), t.profile.education, _edu_value)):
+        for title in titles if items else ():  # the section's name on this tenant ("Work History" at Salesforce)
             try:
-                a, b = _fill_section(t, title, items, value_of)
+                a, b = _fill_section(t, title, items, value_of, add)
                 n, left = n + a, left + b
+                if a or b:  # found it here; an unknown name just finds nothing
+                    break
             except Exception as e:
                 print(f"    workday {title}: {type(e).__name__}: {str(e)[:100]}")
     skills = [s.strip() for g in data.get("skills") or [] for s in re.split(r",|;", g.get("items", "")) if s.strip()]
@@ -661,24 +809,29 @@ def _fill_my_experience(t: Tracked) -> tuple[int, list[dict]]:
     sites = [u for u in dict.fromkeys([data.get("github"), data.get("website")]) if u]
     if sites:
         try:
-            a, b = _fill_section(t, "Websites", sites, lambda u, f: u if re.search(r"url|website|link", f.label, re.I) else None)
+            a, b = _fill_section(t, "Websites", sites, lambda u, f: u if re.search(r"url|website|link", f.label, re.I) else None, add)
             n, left = n + a, left + b
         except Exception as e:
             print(f"    workday websites: {type(e).__name__}: {str(e)[:100]}")
     return n, left
 
 
-def _fill_page(t: Tracked, kind: str) -> tuple[int, list[dict]]:
+def _fill_page(t: Tracked, kind: str, only_new: set | None = None) -> tuple[int, list[dict]]:
     """Fill what's known on this step. -> (filled count, left for the person).
 
     Company questions ("Application Questions" pages) are answered only from YOUR saved answers and profile, never by a
     model; everything else also uses the usual tiers (profile -> Jev -> fast model)."""
     page, profile = t.page, t.profile
     skip = _SKIP_SECTIONS if kind == "experience" else []
-    wfields = [f for f in extract(page, skip) if f.kind not in ("file", "date")]
+    every = [f for f in extract(page, skip) if f.kind != "file"]
+    t.page_labels = {f.label for f in every}
+    if only_new is not None:  # a later look: only questions an answer revealed
+        every = [f for f in every if f.label not in only_new]
+    wfields = [f for f in every if f.kind != "date"]
+    dates = [f for f in every if f.kind == "date" and not f.value] if kind != "experience" else []
     if kind == "experience":  # only the links (LinkedIn, GitHub, website); the rest comes from the resume
         wfields = [f for f in wfields if re.search(r"linkedin|github|website|portfolio|url", f.label, re.I)]
-    todo = [f for f in wfields if not f.value and f.kind != "consent"]
+    todo = [f for f in wfields if not f.value and f.kind != "consent" and not re.search(r"\bextension\b", f.label, re.I)]
     for f in todo:
         if f.kind == "list":
             f.options = _list_options(page, f)
@@ -718,6 +871,15 @@ def _fill_page(t: Tracked, kind: str) -> tuple[int, list[dict]]:
         else:
             left.append({"id": fid, "label": f.label, "reason": f"couldn't fill (wanted: {v[:80]})", "required": f.required,
                          "options": f.options})
+    for f in dates:  # "anticipated graduation date": your degree's end; other dates are yours to give
+        e = profile.education[0] if profile.education else None
+        if e and re.search(r"graduat|degree completion|complete your degree", f.label, re.I):
+            if _fill_date(page, f, f"{e.end_year}-{e.end_month:02d}-01"):
+                n += 1
+                t.filled.append({"label": f.label, "value": f"{e.end_month:02d}/{e.end_year}", "tier": "direct"})
+                continue
+        if f.required:
+            left.append({"id": f.id, "label": f.label, "required": True, "reason": "a date: fill it in the browser"})
     for f in wfields:
         if f.kind == "consent" and not f.value:
             # you've authorised the runner to accept application terms ("I have read and consent..."); opt-ins stay off
@@ -779,8 +941,20 @@ def _guard(page: Page, on: bool):
 
 _NEXT = f'{A("bottom-navigation-next-button")}, {A("pageFooterNextButton")}'
 _ERRORS_JS = r"""
-() => [...document.querySelectorAll('[data-automation-id="errorMessage"], [data-automation-id="errorBanner"] li, [role="alert"]')]
-  .filter(e => e.getBoundingClientRect().height > 0).map(e => (e.innerText || '').replace(/\s+/g, ' ').trim()).filter(Boolean)
+() => {
+  const t = e => (e.innerText || '').replace(/\s+/g, ' ').trim();
+  const msgs = [...document.querySelectorAll('[data-automation-id="errorMessage"], [data-automation-id="errorBanner"] li, [role="alert"]')]
+    .filter(e => e.getBoundingClientRect().height > 0).map(t).filter(Boolean);
+  // fields Workday marked invalid without a message in view
+  const bad = [...document.querySelectorAll('[aria-invalid="true"]')].map(e => {
+    const box = e.closest('[data-automation-id^="formField-"]');
+    const lab = box && box.querySelector('label');
+    return lab ? `The field ${t(lab).replace(/\*$/, '')} is required or invalid` : '';
+  }).filter(Boolean);
+  // the "Errors Found" list, wherever Workday renders it
+  const said = [...(document.body.innerText || '').matchAll(/The field .{1,1500}? is required and must have a value\.?/g)].map(m => m[0]);
+  return [...msgs, ...said, ...bad];
+}
 """
 
 
@@ -789,6 +963,10 @@ def _continue(t: Tracked) -> tuple[bool, list[str], str]:
     -> (moved to another step, Workday's error messages, why not: '' | 'no_button' | 'errors' | 'stayed')"""
     page = t.page
     btn = page.locator(_NEXT).first
+    try:  # the footer renders after the questions; some tenants' buttons lack Workday's usual ids
+        btn.wait_for(state="visible", timeout=5000)
+    except Exception:
+        btn = page.get_by_role("button", name=re.compile(r"^\s*(save and continue|next|continue)\s*$", re.I)).first
     try:
         if not btn.count() or not btn.is_visible():
             return False, [], "no_button"
@@ -858,6 +1036,17 @@ def _hand_over(t: Tracked, update, n: int, left: list[dict]) -> str:
     need = [u for u in left if u.get("required")]
     if t.kind in _AUTO_CONTINUE and not need:
         moved, errors, why = _continue(t)
+        if why == "errors":  # Workday shows some questions only when it checks the page: fill what appeared, try again
+            _guard(t.page, True)
+            try:
+                a2, _ = _fill_page(t, t.kind)
+            except Exception:
+                a2 = 0
+            finally:
+                _guard(t.page, False)
+            if a2:
+                n += a2
+                moved, errors, why = _continue(t)
         if moved:
             print(f"    workday job {t.job['id']}: {t.where} done ({n} filled) - continued to the next step")
             update(status="filling", status_reason=f"Workday: {t.where} done, next step loading", unanswered=left,
@@ -865,6 +1054,13 @@ def _hand_over(t: Tracked, update, n: int, left: list[dict]) -> str:
             return "moved"
         t.failed_fp = t.pending_fp or _page_state(t)[1]
         t.pending_fp = ""
+        shot = config.ROOT / "out" / f"workday-stuck-{t.job['id']}.png"
+        try:  # what the page looked like (picture + HTML), to see why it couldn't continue
+            shot.with_suffix(".html").write_text(t.page.content(), encoding="utf-8")
+            t.page.screenshot(path=str(shot), full_page=True)
+            print(f"    workday job {t.job['id']}: {why} on {t.where}; screenshot {shot}")
+        except Exception:
+            pass
         if why == "errors":
             need = _error_items(errors)
         elif why == "no_button":
@@ -1004,8 +1200,18 @@ def step(t: Tracked, update, reload_bank=None) -> str:
         if kind == "experience":
             _upload_resume(t)
             n, left = _fill_my_experience(t)
+            # again: a block added (or parsed from the resume) late is found on the second look; filled fields are kept
+            a, left = _fill_my_experience(t, add=False)
+            n += a
         a, b = _fill_page(t, kind)
         n, left = n + a, left + b
+        for _ in range(3):  # answers reveal follow-ups, which reveal more ("...sponsorship?" -> "visa type"): look again
+            if not a:
+                break
+            seen = set(t.page_labels)
+            page.wait_for_timeout(700)
+            a, b = _fill_page(t, kind, only_new=seen)
+            n, left = n + a, left + b
     except Exception as e:
         print(f"    workday fill problem: {type(e).__name__}: {str(e)[:120]}")
         left = [{"id": "x", "label": "this page", "required": True, "reason": f"couldn't fill it: {str(e)[:120]}"}]

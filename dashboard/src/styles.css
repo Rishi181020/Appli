@@ -285,6 +285,8 @@ button:focus-visible, a:focus-visible, label.btn:focus-within { outline: 3px sol
 .seg button.on { background: var(--text); color: var(--panel); }
 .tools { display: flex; gap: 8px; flex-wrap: wrap; }
 .tools select { border-radius: 999px; padding: 0 14px; }
+.since { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted, inherit); }
+.since input { border-radius: 999px; padding: 0 10px; }
 .search { position: relative; flex: 1; min-width: 220px; }
 .search svg { position: absolute; left: 14px; top: 12px; color: var(--muted); }
 .search input { width: 100%; padding-left: 40px; border-radius: 999px; }

@@ -76,6 +76,7 @@ export type Job = {
   unanswered: Unanswered[] | null;
   attempts: number;
   updated_at: string;
+  created_at?: string;
   resume_match?: ResumeMatch | null;
   resume_review?: "pending" | "built" | "dismissed" | null;
   resume_file?: string | null;
@@ -140,6 +141,7 @@ export type Digest = { at: string; count: number; jobs: { key: string; company: 
 export type AgentStatus = {
   digest?: Digest | null;
   running: boolean;
+  pulling?: boolean; // the startup pull of new Simplify jobs
   stopping: boolean;
   progress: { current: number; total: number; label: string };
   log: string[];
@@ -288,6 +290,11 @@ export function fileToBase64(f: File): Promise<string> {
   });
 }
 
+/** When the posting went up (Simplify's date_posted for list jobs), to the day: days_posted counts from when it was added. */
+export function postedAt(j: Job): number | null {
+  return j.days_posted == null || !j.created_at ? null : Date.parse(j.created_at.slice(0, 10)) - j.days_posted * 864e5;
+}
+
 export function timeAgo(iso: string): string {
   const s = Math.max(1, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
   if (s < 60) return "just now";
@@ -306,7 +313,7 @@ export function hue(name: string): number {
 export const ACTIVE_STATUSES: Status[] = STATUSES.filter((s) => s !== "submitted");
 
 export const LIST_COLUMNS =
-  "id,company,role,location,url,fit_tier,days_posted,ats,status,status_reason,resume_used,attempts,updated_at,unanswered,source";
+  "id,company,role,location,url,fit_tier,days_posted,ats,status,status_reason,resume_used,attempts,updated_at,unanswered,source,created_at";
 
 // ---- resume tailoring ----
 export type ResumeScore = { pct: number; matched: string[]; missing: string[] };

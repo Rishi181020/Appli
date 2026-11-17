@@ -11,6 +11,7 @@ import {
   hue,
   matchTone,
   pctText,
+  postedAt,
   timeAgo,
   skipExplanation,
 } from "./lib";
@@ -26,6 +27,12 @@ import { IconChevron, IconPlay, IconRefresh, IconSearch } from "./Icons";
 
 // jobs added from SimplifyJobs' lists on Find jobs (runner/jobsearch.py to_rows: "Find jobs: New-grad list")
 const SIMPLIFY = "simplify";
+const WEEK = 7 * 864e5;
+const today = () => Date.parse(new Date().toISOString().slice(0, 10)); // UTC midnight, the same clock as postedAt
+const postedText = (t: number) => {
+  const d = Math.round((today() - t) / 864e5);
+  return d <= 0 ? "posted today" : `posted ${d}d ago`;
+};
 const fromSimplify = (j: Job) => /^Find jobs: (New-grad|Internship) list/.test(j.source ?? "");
 const sameDay = (iso: string) => new Date(iso).toDateString() === new Date().toDateString();
 
@@ -67,6 +74,7 @@ function PickRow({ j, order, onToggle, children }: { j: Job; order: number; onTo
 
 export function JobItem({ j, selected, onClick }: { j: Job; selected: boolean; onClick: () => void }) {
   const need = (j.unanswered ?? []).filter((u) => u.required).length;
+  const posted = postedAt(j);
   return (
     <button className={`item ${selected ? "sel" : ""}`} onClick={onClick}>
       <Avatar name={j.company} />
@@ -89,7 +97,9 @@ export function JobItem({ j, selected, onClick }: { j: Job; selected: boolean; o
           {STATUS_LABEL[j.status]}
         </span>
       </div>
-      <div className="when">{timeAgo(j.updated_at)}</div>
+      <div className="when" title={posted == null ? "Last updated" : `Posted ${new Date(posted).toLocaleDateString(undefined, { timeZone: "UTC" })}`}>
+        {posted == null ? timeAgo(j.updated_at) : postedText(posted)}
+      </div>
       <IconChevron />
     </button>
   );
@@ -100,12 +110,13 @@ export default function JobsView({ onOpenApplied }: { onOpenApplied: () => void 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // multi-select filters: an empty list means "all"
-  const [statuses, setStatuses] = useState<Status[]>(["ready_for_review"]);
+  const [statuses, setStatuses] = useState<Status[]>(["ready_for_review", "queued"]); // queued: new Simplify openings show on top
   const setStatus = (s: Status) => setStatuses([s]); // the KPI cards jump to one status
   const toggleStatus = (s: Status) => setStatuses((cur) => (cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s]));
   const [tiers, setTiers] = useState<string[]>([]);
   const [sites, setSites] = useState<string[]>([]);
   const [q, setQ] = useState("");
+  const [since, setSince] = useState(""); // "Posted since" date, yyyy-mm-dd
   const [matches, setMatches] = useState<string[]>([]);
   const [sort, setSort] = useState<"tier" | "match_desc" | "match_asc">("tier");
   const [openId, setOpenId] = useState<number | null>(null);
@@ -171,6 +182,12 @@ export default function JobsView({ onOpenApplied }: { onOpenApplied: () => void 
     if (wasRunning.current && !running) load(); // one last refresh when a run ends
     wasRunning.current = running;
   }, [running, load]);
+  const pulling = !!agentStatus?.pulling;
+  const wasPulling = useRef(false);
+  useEffect(() => {
+    if (wasPulling.current && !pulling) load(); // the startup Simplify pull added jobs
+    wasPulling.current = pulling;
+  }, [pulling, load]);
 
   const counts = useMemo(() => {
     const c: Record<string, number> = {};
@@ -207,13 +224,14 @@ export default function JobsView({ onOpenApplied }: { onOpenApplied: () => void 
     ].map((o) => ({ ...o, count: c[o.value] ?? 0 }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [listed]);
-  const filtering = statuses.length > 0 || tiers.length > 0 || sites.length > 0 || matches.length > 0 || q.trim() !== "";
+  const filtering = statuses.length > 0 || tiers.length > 0 || sites.length > 0 || matches.length > 0 || q.trim() !== "" || since !== "";
   const clearFilters = () => {
     setStatuses([]);
     setTiers([]);
     setSites([]);
     setMatches([]);
     setQ("");
+    setSince("");
   };
 
   const avgMatchToday = useMemo(() => {
@@ -237,9 +255,17 @@ export default function JobsView({ onOpenApplied }: { onOpenApplied: () => void 
         (!tiers.length || tiers.includes(String(j.fit_tier ?? "none"))) &&
         siteOk(j) &&
         (!matches.length || matches.includes(matchOf(j))) &&
-        (!needle || `${j.company} ${j.role ?? ""}`.toLowerCase().includes(needle))
+        (!needle || `${j.company} ${j.role ?? ""}`.toLowerCase().includes(needle)) &&
+        (!since || (postedAt(j) ?? -Infinity) >= Date.parse(since))
     );
-    if (sort !== "tier") {
+    if (sort === "tier") {
+      // Simplify postings added in the last week first, newest first: fresh new-grad openings fill up fast
+      const fresh = (j: Job) => {
+        const t = fromSimplify(j) ? postedAt(j) : null;
+        return t != null && today() - t <= WEEK ? t : -Infinity;
+      };
+      out.sort((a, b) => fresh(b) - fresh(a) || 0);
+    } else {
       const dir = sort === "match_desc" ? -1 : 1;
       out.sort((a, b) => {
         if (a.match_pct == null) return 1; // unknown match always last
@@ -249,7 +275,7 @@ export default function JobsView({ onOpenApplied }: { onOpenApplied: () => void 
     }
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jobs, statuses, tiers, sites, q, matches, sort]);
+  }, [jobs, statuses, tiers, sites, q, matches, sort, since]);
 
   // Run with filters on: the queued jobs on screen that Appli can fill, top first
   const filteredIds = useMemo(
@@ -352,8 +378,12 @@ export default function JobsView({ onOpenApplied }: { onOpenApplied: () => void 
           <MultiSelect label="tier" allLabel="All tiers" options={tierOptions} value={tiers} onChange={setTiers} />
           <MultiSelect label="site" allLabel="All sites" options={siteOptions} value={sites} onChange={setSites} />
           <MultiSelect label="match range" allLabel="Any match" options={matchOptions} value={matches} onChange={setMatches} />
+          <label className="since" title="Only postings that went up on or after this day">
+            Posted since
+            <input type="date" value={since} max={new Date().toISOString().slice(0, 10)} onChange={(e) => setSince(e.target.value)} />
+          </label>
           <select value={sort} onChange={(e) => setSort(e.target.value as typeof sort)} aria-label="Sort">
-            <option value="tier">Sort: fit tier</option>
+            <option value="tier">Sort: new Simplify first, then fit tier</option>
             <option value="match_desc">Sort: match % high → low</option>
             <option value="match_asc">Sort: match % low → high</option>
           </select>
@@ -379,7 +409,7 @@ export default function JobsView({ onOpenApplied }: { onOpenApplied: () => void 
             <div className="empty-art">✦</div>
             <b>Nothing here</b>
             <span className="muted">
-              {statuses.length === 1 && statuses[0] === "ready_for_review"
+              {statuses.includes("ready_for_review")
                 ? "Press Run to fill your next batch."
                 : "No applications match these filters."}
             </span>

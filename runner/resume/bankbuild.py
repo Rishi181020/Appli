@@ -367,10 +367,35 @@ def claude_build(job: dict, info: dict, entries: list[dict], profile, headings: 
     mine = config.USER.tailor_prompt if config.USER else ""
     system = _CLAUDE_SYSTEM + (f"\n\nTHE CANDIDATE'S OWN INSTRUCTIONS (follow them; the TRUTH rules still win):\n{mine}"
                                if mine else "")
-    raw = llm.claude_json(system, user, purpose="bank resume: claude single pass")
-    draft = {"entries": raw.get("entries") if isinstance(raw.get("entries"), dict) else {},
-             "skills": raw.get("skills") if isinstance(raw.get("skills"), list) else []}
-    return plan(job, info, entries, profile, headings, template, raw=raw), draft
+    for attempt in (1, 2):
+        raw = _resolve_ids(llm.claude_json(system, user, purpose="bank resume: claude single pass"), entries)
+        draft = {"entries": raw.get("entries") if isinstance(raw.get("entries"), dict) else {},
+                 "skills": raw.get("skills") if isinstance(raw.get("skills"), list) else []}
+        p = plan(job, info, entries, profile, headings, template, raw=raw)
+        if any((draft["entries"].get(x["id"]) or {}).get("bullets") for s in p["sections"] for x in s["entries"]):
+            return p, draft
+        # an answer naming no real bank entry would build an empty page: keep it for a look, ask once more
+        (config.ROOT / "out" / f"claude-bank-empty-{job.get('id')}-{attempt}.json").write_text(
+            json.dumps(raw, indent=1, ensure_ascii=False), encoding="utf-8")
+    raise RuntimeError("Claude's resume draft used none of your bank entries twice; try Build again")
+
+
+def _resolve_ids(raw: dict, entries: list[dict]) -> dict:
+    """Map entries Claude named by title (or a mangled id) back to their bank ids, so its bullets aren't thrown away."""
+    alias: dict[str, str] = {}
+    for e in entries:
+        for k in (e["id"], e["title"], f"{e['title']} {e['org']}", f"{e['title']} at {e['org']}"):
+            alias.setdefault(_norm(k), e["id"])
+    fix = lambda i: alias.get(_norm(str(i or "")), i)  # noqa: E731
+    for x in [x for s in raw.get("sections") or [] for x in s.get("entries") or []] + list(raw.get("reserve") or []):
+        if isinstance(x, dict):
+            x["id"] = fix(x.get("id"))
+    got = raw.get("entries")
+    if isinstance(got, list):  # [{"id": ..., "bullets": [...]}]
+        got = {x.get("id"): x for x in got if isinstance(x, dict) and x.get("id")}
+    if isinstance(got, dict):
+        raw["entries"] = {fix(k): v for k, v in got.items()}
+    return raw
 
 
 # ---- 4. verify (code, not a model) --------------------------------------------------------------------------------
